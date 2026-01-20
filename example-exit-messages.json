@@ -1,0 +1,68 @@
+{
+  "messages": [
+    {
+      "message": "Goodbye! Thanks for using RtVS! 👋"
+    },
+    {
+      "message": "See you later, developer! 🚀"
+    },
+    {
+      "message": "Until next time! Keep building! 🔨"
+    },
+    {
+      "message": "May your code compile and your commits be green! ✨"
+    },
+    {
+      "message": "Remember: the best code is the code you don't have to write twice! 🔄"
+    },
+    {
+      "message": "Syncing complete. Dream mode activated. 😴",
+      "author": "RtVS Team"
+    },
+    {
+      "message": "Don't forget to commit your changes! (Unless they're bad, then definitely forget.) 🙈"
+    },
+    {
+      "message": "Roses are red, violets are blue, your game is synced, and we love you too! 💝"
+    },
+    {
+      "message": "Exit stage left! 🎭"
+    },
+    {
+      "message": "To infinity and beyond! Wait, wrong franchise... 🌌"
+    },
+    {
+      "message": "The files have been saved. The world is at peace. 🕊️"
+    },
+    {
+      "message": "You're free! Go touch some grass! 🌱",
+      "author": "Your Computer"
+    },
+    {
+      "message": "Ctrl+C? More like Ctrl+See-you-later! 😎"
+    },
+    {
+      "message": "Remember: there are no bugs, only undocumented features! 🐛➡️✨"
+    },
+    {
+      "message": "Stay hydrated, stay synced! 💧"
+    },
+    {
+      "message": "May the source be with you! ⚔️",
+      "author": "Obi-Wan Commitobi"
+    },
+    {
+      "message": "Great Scott! Your files are synced! ⚡",
+      "author": "Doc Brown"
+    },
+    {
+      "message": "That's all folks! 🐷"
+    },
+    {
+      "message": "404: Motivation not found. Time for a break! ☕"
+    },
+    {
+      "message": "Your princess is in another castle! (But your files are right here.) 🏰"
+    }
+  ]
+}
