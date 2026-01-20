@@ -6,6 +6,12 @@ Contrary to popular belief, this does work with other code editors besides VS..
 
 **Version: 0.1.1 (Public Beta)**
 
+### Quick Update:
+
+Roblox does not allow plugins on the creator store that rely on HttpService. This is how the plugin functions, with no alternatives. I'm working on resolving the issue, but for rn, you'll have to use Option B. Everything else should still work reliably.
+
+Sorry for the inconvience.
+
 ---
 
 A 2-way synchronization system that connects Roblox Studio to your file system (and vice versa), enabling version control and external editing of Roblox game content.
