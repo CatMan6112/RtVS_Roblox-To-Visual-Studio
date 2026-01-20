@@ -345,7 +345,60 @@ Open the **Output** window to see plugin logs:
 
 ## Version
 
-Plugin Version: 0.1.0 (Public Beta!)
+Plugin Version: 0.1.1 (Public Beta!)
+
+### Version Compatibility
+
+The plugin performs automatic version checking on startup to ensure compatibility with the server. Both the plugin and server must be running the same version to function correctly.
+
+**What happens on startup**:
+1. Plugin connects to server via `GET /ping`
+2. Server responds with its version number
+3. Plugin compares versions and checks for compatibility
+
+**If versions match**:
+- Plugin displays: `RtVS Server connected (v0.1.1)`
+- All functionality enabled normally
+
+**If plugin is outdated** (plugin version < server version):
+```
+========================================
+OUTDATED PLUGIN
+========================================
+Outdated Plugin!! Please Update via Plugin Manager on the Plugins Tab!
+If there is no new plugin, wait about an hour and come back.
+Plugin functionality has been suspended.
+========================================
+Plugin Version: 0.1.0
+Server Version: 0.1.1
+========================================
+```
+
+**Solution**: Update the plugin via the Plugin Manager in Roblox Studio. If the update isn't available yet, wait about an hour for the Roblox plugin store to propagate the update.
+
+**If server is outdated** (server version < plugin version):
+```
+========================================
+OUTDATED SERVER
+========================================
+Outdated Server!! Please Update Via Github at
+https://github.com/CatMan6112/RtVS_Roblox-To-Visual-Studio/!!
+Plugin Functionality has been Suspended!!
+========================================
+Plugin Version: 0.1.1
+Server Version: 0.1.0
+========================================
+```
+
+**Solution**: Update the server by pulling the latest version from GitHub:
+```bash
+cd server
+git pull origin main
+npm install
+npm start
+```
+
+**Important**: When a version mismatch is detected, all plugin functionality is suspended. You cannot use Prioritize Studio, Prioritize Server, or Full Sync until versions are matched.
 
 ### Use of AI
 As much as I despise AI and how it's destroying creative work, I think there's use in it for inteligent reptitve tasks such as writing documentation.

@@ -11,6 +11,10 @@ local StudioWatcher = require(script.Parent["studio-watcher"])
 -- Server configuration
 local SERVER_URL = "http://localhost:8080"
 local POLL_INTERVAL = 2 -- Poll every 2 seconds
+local PLUGIN_VERSION = "0.1.1"
+
+-- Version check state
+local versionMismatch = false
 
 -- Sync mode state
 local SYNC_MODE = {
@@ -22,20 +26,90 @@ local SYNC_MODE = {
 local currentMode = SYNC_MODE.NONE
 local isPolling = false
 
--- Test server connection
+-- Compare version strings (returns -1 if v1 < v2, 0 if equal, 1 if v1 > v2)
+local function compareVersions(v1, v2)
+	local v1Parts = {}
+	local v2Parts = {}
+
+	for num in string.gmatch(v1, "%d+") do
+		table.insert(v1Parts, tonumber(num))
+	end
+
+	for num in string.gmatch(v2, "%d+") do
+		table.insert(v2Parts, tonumber(num))
+	end
+
+	for i = 1, math.max(#v1Parts, #v2Parts) do
+		local part1 = v1Parts[i] or 0
+		local part2 = v2Parts[i] or 0
+
+		if part1 < part2 then
+			return -1
+		elseif part1 > part2 then
+			return 1
+		end
+	end
+
+	return 0
+end
+
+-- Test server connection and check version compatibility
 local function testConnection()
 	local success, response = pcall(function()
 		return HttpService:GetAsync(SERVER_URL .. "/ping")
 	end)
 
-	if success then
-		print("RtVS Server connected")
-		return true
-	else
+	if not success then
 		warn("RtVS Server not running - start it with 'npm start' in /server")
 		warn("    Error:", response)
 		return false
 	end
+
+	-- Parse response to get server version
+	local data = HttpService:JSONDecode(response)
+
+	if not data or not data.version then
+		warn("RtVS Server responded but version information is missing")
+		return false
+	end
+
+	local serverVersion = data.version
+	local versionComparison = compareVersions(PLUGIN_VERSION, serverVersion)
+
+	if versionComparison < 0 then
+		-- Plugin version is lower than server version
+		warn("========================================")
+		warn("OUTDATED PLUGIN")
+		warn("========================================")
+		warn("Outdated Plugin!! Please Update via Plugin Manager on the Plugins Tab!")
+		warn("If there is no new plugin, wait about an hour and come back.")
+		warn("Plugin functionality has been suspended.")
+		warn("========================================")
+		warn("Plugin Version: " .. PLUGIN_VERSION)
+		warn("Server Version: " .. serverVersion)
+		warn("========================================")
+		versionMismatch = true
+		return false
+	elseif versionComparison > 0 then
+		-- Plugin version is higher than server version
+		warn("========================================")
+		warn("OUTDATED SERVER")
+		warn("========================================")
+		warn("Outdated Server!! Please Update Via Github at")
+		warn("https://github.com/CatMan6112/RtVS_Roblox-To-Visual-Studio/!!")
+		warn("Plugin Functionality has been Suspended!!")
+		warn("========================================")
+		warn("Plugin Version: " .. PLUGIN_VERSION)
+		warn("Server Version: " .. serverVersion)
+		warn("========================================")
+		versionMismatch = true
+		return false
+	end
+
+	-- Versions match
+	print("RtVS Server connected (v" .. serverVersion .. ")")
+	versionMismatch = false
+	return true
 end
 
 -- Close all open script editors to refresh them
@@ -326,6 +400,11 @@ end
 
 -- Enable "Prioritize Studio" mode
 local function enablePrioritizeStudio()
+	if versionMismatch then
+		warn("Cannot enable Prioritize Studio mode: Version mismatch detected")
+		return
+	end
+
 	if currentMode == SYNC_MODE.PRIORITIZE_STUDIO then
 		print("Already in Prioritize Studio mode")
 		return
@@ -361,6 +440,11 @@ end
 
 -- Enable "Prioritize Server" mode
 local function enablePrioritizeServer()
+	if versionMismatch then
+		warn("Cannot enable Prioritize Server mode: Version mismatch detected")
+		return
+	end
+
 	if currentMode == SYNC_MODE.PRIORITIZE_SERVER then
 		print("Already in Prioritize Server mode")
 		return
@@ -397,6 +481,11 @@ local lastFullSyncClick = 0
 
 -- Function to perform full sync with double-click confirmation
 local function performFullSync()
+	if versionMismatch then
+		warn("Cannot perform Full Sync: Version mismatch detected")
+		return
+	end
+
 	local currentTime = tick()
 
 	-- Reset if more than 3 seconds have passed

@@ -64,12 +64,18 @@ end
 -- Parse a file path to determine the instance path
 -- Example: "Workspace/Part1/__main__.lua" -> Workspace.Part1
 -- Example: "ServerScriptService/MyScript.lua" -> ServerScriptService.MyScript
+-- Example: "ServerScriptService/MyScript.client.lua" -> ServerScriptService.MyScript
+-- Example: "ServerScriptService/MyScript.local.lua" -> ServerScriptService.MyScript
 function Deserializer.parsePath(filePath)
 	-- Normalize path separators (handle both / and \)
 	filePath = filePath:gsub("\\", "/")
 
-	-- Remove file extension
-	local pathWithoutExt = filePath:match("(.+)%..+$") or filePath
+	-- Remove file extension (handles .client.lua, .local.lua, .module.lua, .lua, .json)
+	-- Remove .client.lua, .local.lua, .module.lua first, then fallback to generic extension removal
+	local pathWithoutExt = filePath:gsub("%.client%.lua$", "")
+	pathWithoutExt = pathWithoutExt:gsub("%.local%.lua$", "")
+	pathWithoutExt = pathWithoutExt:gsub("%.module%.lua$", "")
+	pathWithoutExt = pathWithoutExt:match("(.+)%..+$") or pathWithoutExt
 
 	-- Remove __main__ if present
 	pathWithoutExt = pathWithoutExt:gsub("/__main__$", "")
@@ -174,21 +180,17 @@ end
 
 -- Determine the ClassName from the file path
 function Deserializer.inferClassName(filePath)
-	-- Check file extension
-	if filePath:match("%.lua$") then
-		-- Check for script types based on parent service
-		if filePath:match("^ServerScriptService/") or filePath:match("^ServerStorage/") then
-			-- Could be Script or ModuleScript
-			-- Default to ModuleScript (user can change it)
-			return "ModuleScript"
-		elseif filePath:match("^StarterPlayer/StarterCharacterScripts/") or
-		       filePath:match("^StarterPlayer/StarterPlayerScripts/") or
-		       filePath:match("^StarterGui/") then
-			return "LocalScript"
-		else
-			-- Default to ModuleScript for ambiguous cases
-			return "ModuleScript"
-		end
+	-- Check file extension patterns
+	-- .client.lua or .local.lua = LocalScript
+	-- .module.lua = ModuleScript
+	-- .lua = Script
+	if filePath:match("%.client%.lua$") or filePath:match("%.local%.lua$") then
+		return "LocalScript"
+	elseif filePath:match("%.module%.lua$") then
+		return "ModuleScript"
+	elseif filePath:match("%.lua$") then
+		-- Plain .lua extension = Script
+		return "Script"
 	elseif filePath:match("%.json$") then
 		-- Property file, parent should already exist
 		return nil

@@ -4,7 +4,7 @@
 
 Contrary to popular belief, this does work with other code editors besides VS..
 
-**Version: 0.1.0 (Public Beta)**
+**Version: 0.1.1 (Public Beta)**
 
 ---
 
@@ -18,12 +18,11 @@ A 2-way synchronization system that connects Roblox Studio to your file system (
 - **Create/update/delete** - All file operations supported
 - **Automatic instance creation** - New files create new objects
 - **Property updates** - Edit JSON files to change object properties
+- **Tagretable Script Types** You're able to name files .module.lua and .local/client.lua to make them client or module scripts. .lua is a normal server script.
 
 **What I'm Still Working On:** (bugs)
 - **Duplication** - It's possible for scripts to duplicate while syncing if the target has been renamed / moved on the recieving end of a sync.
 Just dont mess with files you're currently editing on the other end.
-- **Tagretable Script Types** - At the moment, scripts created using the file system are by default modulescripts. I suspect this to be an easy fix, but it's not implemented at the moment. 
-Create the scripts through Roblox Studio with the type you want for them momement.
 
 ## Project Structure
 
@@ -91,7 +90,7 @@ The server creates files following this structure:
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.1.1",
   "timestamp": "2024-01-18T12:34:56.789Z",
   "services": [
     {
@@ -117,7 +116,7 @@ Health check endpoint.
 ```json
 {
   "status": "ok",
-  "version": "0.1.0"
+  "version": "0.1.1"
 }
 ```
 
@@ -130,7 +129,7 @@ Server status with sync information.
   "connected": true,
   "lastSync": "2024-01-18T12:34:56.789Z",
   "filesCount": 42,
-  "version": "0.1.0"
+  "version": "0.1.1"
 }
 ```
 

@@ -129,8 +129,18 @@ local function getInstanceFilePath(instance)
 			-- Script with children -> folder with __main__.lua
 			return basePath .. "/__main__.lua"
 		else
-			-- Script without children -> standalone .lua file
-			return basePath .. ".lua"
+			-- Script without children -> standalone file with appropriate extension
+			-- Determine extension based on ClassName
+			-- .lua = Script
+			-- .client.lua = LocalScript (note: .local.lua is also supported as an alias)
+			-- .module.lua = ModuleScript
+			local extension = ".lua" -- Default for Script
+			if instance.ClassName == "LocalScript" then
+				extension = ".client.lua"
+			elseif instance.ClassName == "ModuleScript" then
+				extension = ".module.lua"
+			end
+			return basePath .. extension
 		end
 	else
 		-- Non-script object -> folder with __main__.json

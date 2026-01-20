@@ -100,7 +100,20 @@ export class FileSystemWriter {
    */
   private async writeScriptFile(instance: RobloxInstance, currentPath: string[]): Promise<void> {
     const dirPath = pathArrayToAbsolute(this.basePath, currentPath.slice(0, -1));
-    const fileName = `${currentPath[currentPath.length - 1]}.lua`;
+    const baseName = currentPath[currentPath.length - 1];
+
+    // Determine file extension based on ClassName
+    // .lua = Script
+    // .client.lua = LocalScript (alias: .local.lua also supported when reading)
+    // .module.lua = ModuleScript
+    let extension = ".lua"; // Default for Script
+    if (instance.ClassName === "LocalScript") {
+      extension = ".client.lua";
+    } else if (instance.ClassName === "ModuleScript") {
+      extension = ".module.lua";
+    }
+
+    const fileName = `${baseName}${extension}`;
     const filePath = path.join(dirPath, fileName);
 
     // Ensure directory exists
