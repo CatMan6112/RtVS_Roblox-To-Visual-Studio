@@ -25,11 +25,6 @@ Just dont mess with files you're currently editing on the other end.
 - **Tagretable Script Types** - At the moment, scripts created using the file system are by default modulescripts. I suspect this to be an easy fix, but it's not implemented at the moment. 
 Create the scripts through Roblox Studio with the type you want for them momement.
 
-## Quick Start 
-(or`QUICKSTART.MD`)
-
-
-
 ## Project Structure
 
 ```
