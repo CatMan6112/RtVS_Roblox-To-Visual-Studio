@@ -1,5 +1,6 @@
 -- RtVS Plugin: Main Entry Point
 -- Handles bidirectional sync between Roblox Studio and file system
+local VERSION = "1.0.1"
 
 local HttpService = game:GetService("HttpService")
 local ScriptEditorService = game:GetService("ScriptEditorService")
