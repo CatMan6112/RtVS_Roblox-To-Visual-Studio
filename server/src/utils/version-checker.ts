@@ -6,7 +6,7 @@
 import https from "https";
 
 const GITHUB_VERSION_URL =
-  "https://raw.githubusercontent.com/CatMan6112/RtVS_Roblox-To-Visual-Studio/main/version.json";
+  "https://raw.githubusercontent.com/CatMan6112/RtVS_Roblox-To-Visual-Studio/refs/heads/main/version.json";
 const VERSION_CHECK_INTERVAL_MS = 3600000; // Check every hour
 
 export interface VersionInfo {

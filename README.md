@@ -63,7 +63,6 @@ See `plugin/README.md` for detailed usage information and workflows.
 
 - `QUICKSTART.md` - Installation and setup guide
 - `plugin/README.md` - Plugin usage, workflows, and file format documentation
-- `CLAUDE.md` - Development documentation and implementation notes
 - `server/` - Node.js/TypeScript server source code
 - `plugin/` - Roblox Studio plugin Lua source code
 
@@ -87,4 +86,3 @@ For installation and setup help, see QUICKSTART.md.
 
 For plugin usage and workflows, see plugin/README.md.
 
-For technical development details, see CLAUDE.md.
