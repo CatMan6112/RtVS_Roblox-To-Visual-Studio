@@ -75,7 +75,7 @@ See `plugin/README.md` for detailed usage information and workflows.
 
 ## License
 
-Polyform Noncommercial License (see LICENSE.md)
+Attribution-NonCommercial-NoDerivatives 4.0 International (see LICENSE.md)
 
 ## Contributing
 
