@@ -1,13 +1,14 @@
 {
   "name": "rtvs-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local server for syncing Roblox Studio instances to file system",
   "main": "dist/server.js",
   "scripts": {
     "start": "ts-node src/server.ts",
     "dev": "ts-node src/server.ts",
     "build": "tsc",
-    "watch": "tsc --watch"
+    "watch": "tsc --watch",
+    "deploy": "ts-node src/plugin-builder/deploy.ts"
   },
   "keywords": [
     "roblox",

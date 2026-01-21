@@ -12,7 +12,7 @@ local StudioWatcher = require(script.Parent["studio-watcher"])
 -- Server configuration
 local SERVER_URL = "http://localhost:8080"
 local POLL_INTERVAL = 2 -- Poll every 2 seconds
-local PLUGIN_VERSION = "0.1.1"
+local PLUGIN_VERSION = "0.1.2"
 
 -- Version check state
 local versionMismatch = false
