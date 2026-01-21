@@ -314,8 +314,13 @@ RtVS Server connected (v0.1.2)
 ========================================
 OUTDATED PLUGIN
 ========================================
-Outdated Plugin!! Please Update via Plugin Manager on the Plugins Tab!
-If there is no new plugin, wait about an hour and come back.
+Outdated Plugin!! Please reinstall from GitHub:
+https://github.com/CatMan6112/RtVS_Roblox-To-Visual-Studio
+
+Download RtVS.rbxm and place it in your Plugins folder:
+  Windows: %LOCALAPPDATA%\Roblox\Plugins\
+  macOS: ~/Documents/Roblox/Plugins/
+
 Plugin functionality has been suspended.
 ========================================
 Plugin Version: 0.1.0

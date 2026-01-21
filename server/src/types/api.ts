@@ -16,12 +16,14 @@ export interface StatusResponse {
   lastSync: string | null;
   filesCount: number;
   version: string;
+  latestVersion?: string;
 }
 
 // Ping endpoint response
 export interface PingResponse {
   status: "ok";
   version: string;
+  latestVersion?: string;
 }
 
 // File change notification (for Phase 3)

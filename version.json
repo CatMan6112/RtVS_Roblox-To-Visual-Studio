@@ -1,0 +1,21 @@
+{
+  "version": "0.1.2",
+  "releaseDate": "2026-01-20",
+  "changelog": {
+    "0.1.2": [
+      "Added version compatibility check between plugin and server",
+      "Plugin functionality suspended on version mismatch",
+      "Clear error messages for outdated plugin/server"
+    ],
+    "0.1.1": [
+      "Added priority modes (Prioritize Studio/Server)",
+      "Automatic script editor closing on file changes",
+      "Improved bidirectional sync with mutual exclusion"
+    ],
+    "0.1.0": [
+      "Initial release",
+      "Bidirectional sync between Studio and file system",
+      "Complete serialization/deserialization support"
+    ]
+  }
+}

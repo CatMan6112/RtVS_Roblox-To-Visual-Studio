@@ -4,6 +4,7 @@
 
 import { Request, Response } from "express";
 import { PingResponse, StatusResponse } from "../types/api";
+import { getLatestVersion } from "../utils/version-checker";
 
 const VERSION = "0.1.2";
 
@@ -18,6 +19,7 @@ export function handlePing(_req: Request, res: Response): void {
   const response: PingResponse = {
     status: "ok",
     version: VERSION,
+    latestVersion: getLatestVersion() || undefined,
   };
 
   res.json(response);
@@ -32,6 +34,7 @@ export function handleStatus(_req: Request, res: Response): void {
     lastSync: lastSyncTime,
     filesCount: totalFilesWritten,
     version: VERSION,
+    latestVersion: getLatestVersion() || undefined,
   };
 
   res.json(response);

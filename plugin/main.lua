@@ -82,8 +82,13 @@ local function testConnection()
 		warn("========================================")
 		warn("OUTDATED PLUGIN")
 		warn("========================================")
-		warn("Outdated Plugin!! Please Update via Plugin Manager on the Plugins Tab!")
-		warn("If there is no new plugin, wait about an hour and come back.")
+		warn("Outdated Plugin!! Please reinstall from GitHub:")
+		warn("https://github.com/CatMan6112/RtVS_Roblox-To-Visual-Studio")
+		warn("")
+		warn("Download RtVS.rbxm and place it in your Plugins folder:")
+		warn("  Windows: %LOCALAPPDATA%\\Roblox\\Plugins\\")
+		warn("  macOS: ~/Documents/Roblox/Plugins/")
+		warn("")
 		warn("Plugin functionality has been suspended.")
 		warn("========================================")
 		warn("Plugin Version: " .. PLUGIN_VERSION)
@@ -109,6 +114,30 @@ local function testConnection()
 
 	-- Versions match
 	print("RtVS Server connected (v" .. serverVersion .. ")")
+
+	-- Check if there's a newer version available
+	if data.latestVersion and data.latestVersion ~= PLUGIN_VERSION then
+		local latestComparison = compareVersions(PLUGIN_VERSION, data.latestVersion)
+
+		if latestComparison < 0 then
+			-- Plugin is outdated
+			warn("========================================")
+			warn("UPDATE AVAILABLE")
+			warn("========================================")
+			warn("A new version of RtVS is available!")
+			warn("Current Version: " .. PLUGIN_VERSION)
+			warn("Latest Version:  " .. data.latestVersion)
+			warn("")
+			warn("Download the latest version from GitHub:")
+			warn("https://github.com/CatMan6112/RtVS_Roblox-To-Visual-Studio")
+			warn("")
+			warn("Replace the plugin file in your Plugins folder:")
+			warn("  Windows: %LOCALAPPDATA%\\Roblox\\Plugins\\")
+			warn("  macOS: ~/Documents/Roblox/Plugins/")
+			warn("========================================")
+		end
+	end
+
 	versionMismatch = false
 	return true
 end

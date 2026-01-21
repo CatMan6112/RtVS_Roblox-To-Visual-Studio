@@ -10,12 +10,14 @@ import { handleChanges, initializeWatcher, stopWatcher } from "./api/changes";
 import { handleStudioChange } from "./api/studio-change";
 import { pathConfig } from "./config/path-config";
 import { preloadExitMessage, getPreloadedExitMessage } from "./utils/exit-message";
+import { startVersionChecker } from "./utils/version-checker";
 
 const app = express();
 
 // Configuration
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = "localhost"; // MUST be "localhost" not "127.0.0.1" for Roblox Studio
+const VERSION = "0.1.2"; // Server version
 
 // Middleware
 app.use(cors()); // Enable CORS for cross-origin requests
@@ -89,6 +91,7 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 
   app.listen(PORT, HOST, async () => {
   console.log("\nRtVS Server Started");
+  console.log(`Version: ${VERSION}`);
   console.log(`Listening on http://${HOST}:${PORT}`);
   console.log(`Storage path: ${syncedGamePath}`);
   console.log(`\nAvailable endpoints:`);
@@ -104,6 +107,10 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 
   // Initialize file watcher
   initializeWatcher(syncedGamePath);
+
+  // Start version checker
+  console.log("Checking for updates...");
+  startVersionChecker(VERSION);
   });
 })();
 
