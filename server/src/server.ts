@@ -6,6 +6,7 @@ import express from "express";
 import cors from "cors";
 import { handlePing, handleStatus } from "./api/health";
 import { handleSync } from "./api/sync";
+import { handleSyncStart, handleSyncChunk, handleSyncComplete, handleSyncStatus } from "./api/sync-chunked";
 import { handleChanges, initializeWatcher, stopWatcher } from "./api/changes";
 import { handleStudioChange } from "./api/studio-change";
 import { pathConfig } from "./config/path-config";
@@ -17,7 +18,7 @@ const app = express();
 // Configuration
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = "localhost"; // MUST be "localhost" not "127.0.0.1" for Roblox Studio
-const VERSION = "0.1.2"; // Server version
+const VERSION = "0.1.3"; // Server version
 
 // Middleware
 app.use(cors()); // Enable CORS for cross-origin requests
@@ -45,11 +46,38 @@ app.get("/ping", handlePing);
 app.get("/status", handleStatus);
 
 /**
- * POST /sync - Receive game data from plugin
+ * POST /sync - Receive game data from plugin (single request, for small games)
  * Body: GameData JSON
  * Returns: { success: true, filesWritten: number, timestamp: "..." }
  */
 app.post("/sync", handleSync);
+
+/**
+ * POST /sync/start - Start a chunked sync session (for large games)
+ * Body: { expectedServices?: number }
+ * Returns: { success: true, sessionId: "..." }
+ */
+app.post("/sync/start", handleSyncStart);
+
+/**
+ * POST /sync/chunk - Send a chunk of game data
+ * Body: { sessionId, type: "service"|"workspace_chunk", ... }
+ * Returns: { success: true, received: true, progress: "..." }
+ */
+app.post("/sync/chunk", handleSyncChunk);
+
+/**
+ * POST /sync/complete - Finalize chunked sync
+ * Body: { sessionId }
+ * Returns: { success: true, filesWritten: number, timestamp: "..." }
+ */
+app.post("/sync/complete", handleSyncComplete);
+
+/**
+ * GET /sync/status/:sessionId - Get write progress during completion
+ * Returns: { success: true, phase: "writing", filesWritten: 100, totalFiles: 500 }
+ */
+app.get("/sync/status/:sessionId", handleSyncStatus);
 
 /**
  * GET /changes - Poll for file system changes (Phase 3)
@@ -95,11 +123,15 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   console.log(`Listening on http://${HOST}:${PORT}`);
   console.log(`Storage path: ${syncedGamePath}`);
   console.log(`\nAvailable endpoints:`);
-  console.log(`   GET  /ping           - Health check`);
-  console.log(`   GET  /status         - Server status`);
-  console.log(`   POST /sync           - Sync game data from plugin`);
-  console.log(`   GET  /changes        - Poll for file changes`);
-  console.log(`   POST /studio-change  - Receive individual Studio changes`);
+  console.log(`   GET  /ping                  - Health check`);
+  console.log(`   GET  /status                - Server status`);
+  console.log(`   POST /sync                  - Sync game data (single request)`);
+  console.log(`   POST /sync/start            - Start chunked sync session`);
+  console.log(`   POST /sync/chunk            - Send sync chunk`);
+  console.log(`   POST /sync/complete         - Complete chunked sync`);
+  console.log(`   GET  /sync/status/:id       - Get write progress`);
+  console.log(`   GET  /changes               - Poll for file changes`);
+  console.log(`   POST /studio-change         - Receive individual Studio changes`);
   console.log(`\nReady to receive sync requests from Roblox Studio plugin\n`);
 
   // Ensure storage directory exists

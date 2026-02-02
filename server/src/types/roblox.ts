@@ -51,6 +51,29 @@ export const SCRIPT_CLASSES = [
 
 export type ScriptClassName = typeof SCRIPT_CLASSES[number];
 
+// Roblox services that RtVS syncs. Order is significant: it is the
+// canonical write order used when assembling GameData.
+export const SERVICE_NAMES = [
+  "Workspace",
+  "ReplicatedStorage",
+  "ReplicatedFirst",
+  "ServerScriptService",
+  "ServerStorage",
+  "StarterGui",
+  "StarterPack",
+  "StarterPlayer",
+  "Lighting",
+  "SoundService",
+  "Chat",
+  "LocalizationService",
+  "TestService",
+] as const;
+
+export type ServiceName = typeof SERVICE_NAMES[number];
+
+// O(1) lookup set, derived from the array so it can never drift out of sync.
+export const SERVICE_NAMES_SET: ReadonlySet<string> = new Set(SERVICE_NAMES);
+
 // Helper type guards
 export function isScriptInstance(instance: RobloxInstance): boolean {
   return SCRIPT_CLASSES.includes(instance.ClassName as ScriptClassName);

@@ -1,23 +1,30 @@
 -- RtVS Plugin: Main Entry Point
--- Handles bidirectional sync between Roblox Studio and file system
-local VERSION = "1.0.1"
-
 local HttpService = game:GetService("HttpService")
 local ScriptEditorService = game:GetService("ScriptEditorService")
 
--- Load modules
 local Deserializer = require(script.Parent.deserializer)
 local StudioWatcher = require(script.Parent["studio-watcher"])
 
--- Server configuration
 local SERVER_URL = "http://localhost:8080"
-local POLL_INTERVAL = 2 -- Poll every 2 seconds
-local PLUGIN_VERSION = "0.1.2"
+local POLL_INTERVAL = 2
+local PLUGIN_VERSION = "0.1.3"
 
--- Version check state
+local MAX_CHUNK_SIZE = 800000
+local YIELD_INTERVAL = 100
+local objectsProcessed = 0
+
+local REQUEST_DELAY = 0.15
+local lastRequestTime = 0
+
+local syncProgress = {
+	totalChunks = 0,
+	sentChunks = 0,
+	startTime = 0,
+	lastProgressUpdate = 0
+}
+
 local versionMismatch = false
 
--- Sync mode state
 local SYNC_MODE = {
 	NONE = "none",
 	PRIORITIZE_STUDIO = "prioritize_studio",
@@ -325,8 +332,14 @@ local function getInstanceProperties(instance)
 	return properties
 end
 
--- Recursive function to serialize instance tree
-local function serializeInstance(instance)
+-- Recursive function to serialize instance tree (with throttling)
+local function serializeInstance(instance, skipChildren)
+	-- Throttle to prevent Studio freeze
+	objectsProcessed = objectsProcessed + 1
+	if objectsProcessed % YIELD_INTERVAL == 0 then
+		task.wait() -- Yield to let Studio breathe
+	end
+
 	local data = {
 		ClassName = instance.ClassName,
 		Name = instance.Name,
@@ -334,8 +347,10 @@ local function serializeInstance(instance)
 		Children = {}
 	}
 
-	for _, child in ipairs(instance:GetChildren()) do
-		table.insert(data.Children, serializeInstance(child))
+	if not skipChildren then
+		for _, child in ipairs(instance:GetChildren()) do
+			table.insert(data.Children, serializeInstance(child, false))
+		end
 	end
 
 	return data
@@ -350,7 +365,411 @@ local function countObjects(data)
 	return count
 end
 
--- Send JSON data to server (Full sync)
+-- Get JSON size of data
+local function getJsonSize(data)
+	local success, json = pcall(function()
+		return HttpService:JSONEncode(data)
+	end)
+	if success then
+		return #json
+	end
+	return 0
+end
+
+-- Throttle HTTP requests to avoid rate limits
+local function throttleRequest()
+	local currentTime = tick()
+	local timeSinceLastRequest = currentTime - lastRequestTime
+	if timeSinceLastRequest < REQUEST_DELAY then
+		task.wait(REQUEST_DELAY - timeSinceLastRequest)
+	end
+	lastRequestTime = tick()
+end
+
+-- Count estimated chunks needed for an instance tree
+local function countChunksNeeded(instanceData)
+	local count = 0
+	local instanceSize = getJsonSize(instanceData)
+
+	if instanceSize <= MAX_CHUNK_SIZE then
+		-- Fits in one chunk
+		return 1
+	end
+
+	-- Will need base chunk + children
+	count = 1 -- Base chunk
+	for _, childData in ipairs(instanceData.Children or {}) do
+		count = count + countChunksNeeded(childData)
+	end
+	return count
+end
+
+-- Format time for ETA display
+local function formatTime(seconds)
+	if seconds < 60 then
+		return string.format("%.0fs", seconds)
+	elseif seconds < 3600 then
+		local mins = math.floor(seconds / 60)
+		local secs = math.floor(seconds % 60)
+		return string.format("%dm %ds", mins, secs)
+	else
+		local hours = math.floor(seconds / 3600)
+		local mins = math.floor((seconds % 3600) / 60)
+		return string.format("%dh %dm", hours, mins)
+	end
+end
+
+-- Update and display sync progress
+local function updateProgress()
+	syncProgress.sentChunks = syncProgress.sentChunks + 1
+
+	local currentTime = tick()
+	-- Only update display every 0.5 seconds to avoid spam
+	if currentTime - syncProgress.lastProgressUpdate < 0.5 then
+		return
+	end
+	syncProgress.lastProgressUpdate = currentTime
+
+	local elapsed = currentTime - syncProgress.startTime
+	local chunksRemaining = syncProgress.totalChunks - syncProgress.sentChunks
+	local avgTimePerChunk = elapsed / syncProgress.sentChunks
+	local eta = chunksRemaining * avgTimePerChunk
+
+	local percent = math.floor((syncProgress.sentChunks / syncProgress.totalChunks) * 100)
+	print(string.format("   Progress: %d/%d chunks (%d%%) - ETA: %s",
+		syncProgress.sentChunks,
+		syncProgress.totalChunks,
+		percent,
+		formatTime(eta)))
+end
+
+-- Reset progress tracking
+local function resetProgress(totalChunks)
+	syncProgress.totalChunks = totalChunks
+	syncProgress.sentChunks = 0
+	syncProgress.startTime = tick()
+	syncProgress.lastProgressUpdate = 0
+end
+
+-- Start a chunked sync session
+local function startChunkedSession(expectedServices)
+	local success, response = pcall(function()
+		return HttpService:PostAsync(
+			SERVER_URL .. "/sync/start",
+			HttpService:JSONEncode({ expectedServices = expectedServices }),
+			Enum.HttpContentType.ApplicationJson
+		)
+	end)
+
+	if success then
+		local data = HttpService:JSONDecode(response)
+		return data.sessionId
+	else
+		warn("Failed to start sync session:", response)
+		return nil
+	end
+end
+
+-- Send a service chunk
+local function sendServiceChunk(sessionId, serviceName, serviceData)
+	-- Throttle to avoid rate limits
+	throttleRequest()
+
+	local success, response = pcall(function()
+		return HttpService:PostAsync(
+			SERVER_URL .. "/sync/chunk",
+			HttpService:JSONEncode({
+				sessionId = sessionId,
+				type = "service",
+				serviceName = serviceName,
+				serviceData = serviceData
+			}),
+			Enum.HttpContentType.ApplicationJson
+		)
+	end)
+
+	if success then
+		local data = HttpService:JSONDecode(response)
+		if data.received then
+			updateProgress()
+		end
+		return data.received
+	else
+		warn("Failed to send service chunk:", response)
+		return false
+	end
+end
+
+-- Send a Workspace chunk (flat children array)
+local function sendWorkspaceChunk(sessionId, chunkIndex, totalChunks, children)
+	local success, response = pcall(function()
+		return HttpService:PostAsync(
+			SERVER_URL .. "/sync/chunk",
+			HttpService:JSONEncode({
+				sessionId = sessionId,
+				type = "workspace_chunk",
+				chunkIndex = chunkIndex,
+				totalChunks = totalChunks,
+				children = children
+			}),
+			Enum.HttpContentType.ApplicationJson
+		)
+	end)
+
+	if success then
+		local data = HttpService:JSONDecode(response)
+		return data.received
+	else
+		warn("Failed to send Workspace chunk:", response)
+		return false
+	end
+end
+
+-- Send a deep chunk (with path for nested objects)
+local function sendDeepChunk(sessionId, parentPath, instanceData, skipProgress)
+	-- Throttle to avoid rate limits
+	throttleRequest()
+
+	local success, response = pcall(function()
+		return HttpService:PostAsync(
+			SERVER_URL .. "/sync/chunk",
+			HttpService:JSONEncode({
+				sessionId = sessionId,
+				type = "deep_chunk",
+				parentPath = parentPath,
+				instanceData = instanceData
+			}),
+			Enum.HttpContentType.ApplicationJson
+		)
+	end)
+
+	if success then
+		local data = HttpService:JSONDecode(response)
+		if data.received and not skipProgress then
+			updateProgress()
+		end
+		return data.received
+	else
+		warn("Failed to send deep chunk:", response)
+		return false
+	end
+end
+
+-- Get sync status for file write progress
+local function getSyncStatus(sessionId)
+	local success, response = pcall(function()
+		return HttpService:GetAsync(SERVER_URL .. "/sync/status/" .. sessionId)
+	end)
+
+	if success then
+		local data = HttpService:JSONDecode(response)
+		return data
+	else
+		return nil
+	end
+end
+
+-- Complete a chunked sync session with progress tracking
+local function completeChunkedSession(sessionId)
+	print("Writing files to disk...")
+	print("")
+
+	-- Start the completion request
+	local writeStartTime = tick()
+	local lastStatusUpdate = 0
+
+	-- Send the complete request (now returns immediately, writes in background)
+	local success, response = pcall(function()
+		return HttpService:PostAsync(
+			SERVER_URL .. "/sync/complete",
+			HttpService:JSONEncode({ sessionId = sessionId }),
+			Enum.HttpContentType.ApplicationJson
+		)
+	end)
+
+	if not success then
+		warn("Failed to start sync completion:", response)
+		return false, 0
+	end
+
+	local completeResult = HttpService:JSONDecode(response)
+	if not completeResult.success then
+		warn("Server rejected sync completion:", completeResult.error or "Unknown error")
+		return false, 0
+	end
+
+	-- Poll for status until complete or error
+	-- The server now writes files in the background and we poll for progress
+	local finalFilesWritten = 0
+
+	while true do
+		task.wait(0.3) -- Poll every 300ms
+
+		local status = getSyncStatus(sessionId)
+		if status then
+			local currentTime = tick()
+
+			-- Check for completion or error
+			if status.phase == "complete" then
+				finalFilesWritten = status.filesWritten or 0
+				print(string.format("   Complete: %d files written", finalFilesWritten))
+				return true, finalFilesWritten
+			elseif status.phase == "error" then
+				warn("File write failed:", status.error or "Unknown error")
+				return false, 0
+			end
+
+			-- Update display every 0.5 seconds
+			if currentTime - lastStatusUpdate >= 0.5 then
+				lastStatusUpdate = currentTime
+
+				if status.phase == "preparing" then
+					print("   Preparing output directory...")
+				elseif status.phase == "writing" then
+					local percent = 0
+					if status.totalFiles and status.totalFiles > 0 then
+						percent = math.floor((status.filesWritten / status.totalFiles) * 100)
+					end
+					local elapsed = currentTime - writeStartTime
+					local eta = 0
+					if status.filesWritten and status.filesWritten > 0 then
+						local avgTimePerFile = elapsed / status.filesWritten
+						local filesRemaining = (status.totalFiles or 0) - status.filesWritten
+						eta = filesRemaining * avgTimePerFile
+					end
+					local serviceInfo = ""
+					if status.currentService then
+						serviceInfo = " - " .. status.currentService
+					end
+					print(string.format("   Writing: %d/%d files (%d%%) - ETA: %s%s",
+						status.filesWritten or 0,
+						status.totalFiles or 0,
+						percent,
+						formatTime(eta),
+						serviceInfo))
+				end
+			end
+		end
+
+		-- Timeout after 4 hours for very large projects
+		if tick() - writeStartTime > 14400 then
+			warn("File write operation timed out (4 hours)")
+			return false, 0
+		end
+	end
+end
+
+-- Recursively send an instance and its children, chunking as needed
+-- Returns true on success, false on failure
+local function sendInstanceRecursive(sessionId, parentPath, instance, instanceData, depth)
+	depth = depth or 0
+	local indent = string.rep("   ", depth)
+
+	local instanceSize = getJsonSize(instanceData)
+	local instancePath = parentPath .. "/" .. instanceData.Name
+
+	-- If this instance fits within the limit, send it whole
+	if instanceSize <= MAX_CHUNK_SIZE then
+		if depth > 0 then -- Don't log for top-level (handled by caller)
+			print(indent .. "Sending " .. instanceData.Name .. " (" .. math.floor(instanceSize/1024) .. "KB)")
+		end
+		local sent = sendDeepChunk(sessionId, parentPath, instanceData)
+		if not sent then
+			warn(indent .. "Failed to send: " .. instancePath)
+			return false
+		end
+		return true
+	end
+
+	-- Instance is too big - send it without children, then recurse
+	print(indent .. "Chunking " .. instanceData.Name .. " (" .. math.floor(instanceSize/1024) .. "KB, " .. #(instanceData.Children or {}) .. " children)...")
+
+	-- Send the instance without children
+	local instanceBase = {
+		ClassName = instanceData.ClassName,
+		Name = instanceData.Name,
+		Properties = instanceData.Properties,
+		Children = {} -- Children sent separately
+	}
+
+	local baseSent = sendDeepChunk(sessionId, parentPath, instanceBase)
+	if not baseSent then
+		warn(indent .. "Failed to send base: " .. instancePath)
+		return false
+	end
+
+	-- Now recursively send each child
+	local children = instanceData.Children or {}
+	local childrenToSend = {}
+	local currentBatchSize = 0
+
+	for i, childData in ipairs(children) do
+		local childSize = getJsonSize(childData)
+
+		-- If this single child is too big, recurse into it
+		if childSize > MAX_CHUNK_SIZE then
+			-- First, flush any accumulated small children
+			if #childrenToSend > 0 then
+				print(indent .. "   Sending batch of " .. #childrenToSend .. " small children...")
+				for _, smallChild in ipairs(childrenToSend) do
+					local sent = sendDeepChunk(sessionId, instancePath, smallChild)
+					if not sent then
+						warn(indent .. "   Failed to send small child: " .. smallChild.Name)
+						return false
+					end
+				end
+				childrenToSend = {}
+				currentBatchSize = 0
+			end
+
+			-- Recurse into the large child
+			local childInstance = instance:FindFirstChild(childData.Name)
+			if not sendInstanceRecursive(sessionId, instancePath, childInstance, childData, depth + 1) then
+				return false
+			end
+		else
+			-- Small enough - accumulate for batch sending
+			-- But if batch would exceed limit, flush first
+			if currentBatchSize + childSize > MAX_CHUNK_SIZE and #childrenToSend > 0 then
+				print(indent .. "   Sending batch of " .. #childrenToSend .. " children...")
+				for _, batchChild in ipairs(childrenToSend) do
+					local sent = sendDeepChunk(sessionId, instancePath, batchChild)
+					if not sent then
+						warn(indent .. "   Failed to send: " .. batchChild.Name)
+						return false
+					end
+				end
+				childrenToSend = {}
+				currentBatchSize = 0
+			end
+
+			table.insert(childrenToSend, childData)
+			currentBatchSize = currentBatchSize + childSize
+		end
+
+		-- Yield periodically during chunking to prevent freeze
+		if i % 50 == 0 then
+			task.wait()
+		end
+	end
+
+	-- Send remaining accumulated children
+	if #childrenToSend > 0 then
+		print(indent .. "   Sending final batch of " .. #childrenToSend .. " children...")
+		for _, childData in ipairs(childrenToSend) do
+			local sent = sendDeepChunk(sessionId, instancePath, childData)
+			if not sent then
+				warn(indent .. "   Failed to send: " .. childData.Name)
+				return false
+			end
+		end
+	end
+
+	print(indent .. instanceData.Name .. " complete")
+	return true
+end
+
+-- Send JSON data to server (Full sync - legacy for small games)
 local function sendToServer(jsonData)
 	local success, response = pcall(function()
 		return HttpService:PostAsync(
@@ -371,8 +790,12 @@ local function sendToServer(jsonData)
 end
 
 -- Main function to read all game services and send to server
+-- Uses chunked sync for large games, single request for small games
 local function readAllServices()
 	print("===== RtVS: Reading All Game Services =====")
+
+	-- Reset throttle counter
+	objectsProcessed = 0
 
 	local success, result = pcall(function()
 		local servicesToRead = {
@@ -391,34 +814,179 @@ local function readAllServices()
 			game:GetService("TestService"),
 		}
 
-		local gameData = {
-			ClassName = "DataModel",
-			Name = "Game",
-			Services = {}
-		}
-
+		-- First pass: serialize all services and count objects
+		print("Serializing game data (this may take a moment for large games)...")
+		local serializedServices = {}
 		local totalObjects = 0
+		local totalSize = 0
+
 		for _, service in ipairs(servicesToRead) do
-			local serviceData = serializeInstance(service)
-			table.insert(gameData.Services, serviceData)
-			totalObjects = totalObjects + countObjects(serviceData)
-			print("Read " .. service.ClassName .. " (" .. countObjects(serviceData) .. " objects)")
+			print("Reading " .. service.ClassName .. "...")
+			local serviceData = serializeInstance(service, false)
+			local objectCount = countObjects(serviceData)
+
+			-- Yield before size calculation to prevent freeze
+			task.wait()
+			local serviceSize = getJsonSize(serviceData)
+
+			table.insert(serializedServices, {
+				service = service,
+				data = serviceData,
+				objectCount = objectCount,
+				size = serviceSize
+			})
+
+			totalObjects = totalObjects + objectCount
+			totalSize = totalSize + serviceSize
+			print("   " .. service.ClassName .. ": " .. objectCount .. " objects, " .. math.floor(serviceSize/1024) .. "KB")
+
+			-- Yield between services
+			task.wait()
 		end
 
-		local jsonData = HttpService:JSONEncode(gameData)
-		print("Total objects processed: " .. totalObjects)
 		print("")
+		print("Total objects: " .. totalObjects)
+		print("Total size: " .. math.floor(totalSize/1024) .. "KB")
 
-		print("Sending data to server...")
-		local syncSuccess, syncResponse = sendToServer(jsonData)
-
-		if syncSuccess then
-			print("Server sync complete!")
-		else
-			warn("Server sync failed")
+		-- Decide whether to use chunked sync
+		local needsChunking = totalSize > MAX_CHUNK_SIZE
+		if not needsChunking then
+			for _, s in ipairs(serializedServices) do
+				if s.size > MAX_CHUNK_SIZE then
+					needsChunking = true
+					break
+				end
+			end
 		end
 
-		return jsonData
+		if needsChunking then
+			print("")
+			print("Large game detected - using deep chunked sync...")
+			print("")
+
+			-- Count total chunks needed for progress tracking
+			print("Calculating chunks needed...")
+			local totalChunksNeeded = 0
+			for _, s in ipairs(serializedServices) do
+				if s.size > MAX_CHUNK_SIZE then
+					-- Will need base chunk + recursive children
+					totalChunksNeeded = totalChunksNeeded + 1 -- base chunk
+					for _, childData in ipairs(s.data.Children or {}) do
+						totalChunksNeeded = totalChunksNeeded + countChunksNeeded(childData)
+					end
+				else
+					totalChunksNeeded = totalChunksNeeded + 1 -- single service chunk
+				end
+				task.wait() -- Yield to prevent freeze
+			end
+			print("Total chunks to send: " .. totalChunksNeeded)
+			print("")
+
+			-- Initialize progress tracking
+			resetProgress(totalChunksNeeded)
+
+			-- Start chunked session
+			local sessionId = startChunkedSession(#servicesToRead)
+			if not sessionId then
+				warn("Failed to start chunked sync session")
+				return nil
+			end
+
+			print("Started sync session: " .. string.sub(sessionId, 1, 8) .. "...")
+			print("Throttle delay: " .. REQUEST_DELAY .. "s between requests")
+			print("")
+
+			-- Send each service
+			for i, s in ipairs(serializedServices) do
+				local serviceName = s.service.ClassName
+
+				-- Check if this service needs deep chunking
+				if s.size > MAX_CHUNK_SIZE then
+					-- Use deep recursive chunking
+					print("Deep chunking " .. serviceName .. " (" .. math.floor(s.size/1024) .. "KB)...")
+
+					-- Send service base (without children)
+					local serviceBase = {
+						ClassName = s.data.ClassName,
+						Name = s.data.Name,
+						Properties = s.data.Properties,
+						Children = {} -- Children sent separately via deep chunks
+					}
+					local baseSent = sendServiceChunk(sessionId, serviceName, serviceBase)
+					if not baseSent then
+						warn("Failed to send " .. serviceName .. " base")
+						return nil
+					end
+
+					-- Recursively send children using deep chunking
+					for _, childData in ipairs(s.data.Children or {}) do
+						local childInstance = s.service:FindFirstChild(childData.Name)
+						if not sendInstanceRecursive(sessionId, serviceName, childInstance, childData, 1) then
+							warn("Failed to send children of " .. serviceName)
+							return nil
+						end
+						task.wait() -- Yield between top-level children
+					end
+
+					print(serviceName .. " complete")
+					print("")
+				else
+					-- Send service as single chunk
+					print("Sending " .. serviceName .. " (" .. math.floor(s.size/1024) .. "KB)...")
+					local sent = sendServiceChunk(sessionId, serviceName, s.data)
+					if not sent then
+						warn("Failed to send service: " .. serviceName)
+						return nil
+					end
+				end
+
+				task.wait() -- Yield between services
+			end
+
+			-- Complete the session
+			print("")
+			print("Completing sync session...")
+			local completeSuccess, filesWritten = completeChunkedSession(sessionId)
+
+			if completeSuccess then
+				local totalTime = tick() - syncProgress.startTime
+				print("")
+				print("========================================")
+				print("Chunked sync complete!")
+				print("   Chunks sent: " .. syncProgress.sentChunks .. "/" .. syncProgress.totalChunks)
+				print("   Files written: " .. filesWritten)
+				print("   Total time: " .. formatTime(totalTime))
+				print("========================================")
+			else
+				warn("Failed to complete chunked sync")
+			end
+		else
+			-- Small game - use single request sync
+			print("")
+			print("Using single-request sync...")
+
+			local gameData = {
+				ClassName = "DataModel",
+				Name = "Game",
+				Services = {}
+			}
+
+			for _, s in ipairs(serializedServices) do
+				table.insert(gameData.Services, s.data)
+			end
+
+			local jsonData = HttpService:JSONEncode(gameData)
+			print("Sending data to server...")
+			local syncSuccess, syncResponse = sendToServer(jsonData)
+
+			if syncSuccess then
+				print("Server sync complete!")
+			else
+				warn("Server sync failed")
+			end
+
+			return jsonData
+		end
 	end)
 
 	if not success then

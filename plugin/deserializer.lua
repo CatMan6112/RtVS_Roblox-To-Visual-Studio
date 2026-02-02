@@ -1,23 +1,17 @@
 -- RtVS Plugin: Deserializer
--- Applies file changes from the server to Roblox Studio instances
-
 local HttpService = game:GetService("HttpService")
 
 local Deserializer = {}
 
--- Helper function to deserialize Vector3
 local function deserializeVector3(data)
 	if type(data) ~= "table" then return nil end
 	return Vector3.new(data.X or 0, data.Y or 0, data.Z or 0)
 end
 
--- Helper function to deserialize Vector2
 local function deserializeVector2(data)
 	if type(data) ~= "table" then return nil end
 	return Vector2.new(data.X or 0, data.Y or 0)
 end
-
--- Helper function to deserialize Color3
 local function deserializeColor3(data)
 	if type(data) ~= "table" then return nil end
 	return Color3.new(data.R or 0, data.G or 0, data.B or 0)
@@ -89,8 +83,31 @@ function Deserializer.parsePath(filePath)
 	return parts
 end
 
+-- Find a child by either its name or its _rtvs_fsName attribute
+-- This handles deduplicated names where folder name differs from instance name
+local function findChildByNameOrFsName(parent, fsName)
+	-- First try direct name match
+	local child = parent:FindFirstChild(fsName)
+	if child then
+		return child
+	end
+
+	-- If not found, look for an instance with matching _rtvs_fsName attribute
+	for _, c in ipairs(parent:GetChildren()) do
+		if c:GetAttribute("_rtvs_fsName") == fsName then
+			return c
+		end
+	end
+
+	return nil
+end
+
 -- Find or create an instance at the given path
-function Deserializer.findOrCreateInstance(pathParts, className)
+-- @param pathParts: Array of path segments (folder names from file system)
+-- @param className: The ClassName to use when creating the final instance
+-- @param realName: Optional real instance name (from JSON Name property) if different from folder name
+-- @param fsName: Optional file system name to store as attribute for reverse lookup
+function Deserializer.findOrCreateInstance(pathParts, className, realName, fsName)
 	if #pathParts == 0 then
 		return nil
 	end
@@ -115,28 +132,39 @@ function Deserializer.findOrCreateInstance(pathParts, className)
 
 	-- Navigate/create path
 	for i = 2, #pathParts do
-		local childName = pathParts[i]
-		local child = current:FindFirstChild(childName)
+		local childFsName = pathParts[i]
+		local isLastPart = (i == #pathParts)
+
+		-- For the last part, use realName if provided, otherwise use folder name
+		local childRealName = isLastPart and realName or childFsName
+
+		-- Find child by folder name or _rtvs_fsName attribute
+		local child = findChildByNameOrFsName(current, childFsName)
 
 		if not child then
 			-- Create the instance
 			-- Use provided className or default to Folder
-			local newClassName = (i == #pathParts and className) or "Folder"
+			local newClassName = (isLastPart and className) or "Folder"
 
-			local success, newChild = pcall(function()
+			local createSuccess, newChild = pcall(function()
 				local instance = Instance.new(newClassName)
-				instance.Name = childName
+				instance.Name = childRealName or childFsName
 				instance.Parent = current
 				return instance
 			end)
 
-			if success then
+			if createSuccess then
 				child = newChild
-				print("Created", newClassName, "at", current:GetFullName() .. "." .. childName)
+				print("Created", newClassName, "at", current:GetFullName() .. "." .. (childRealName or childFsName))
 			else
 				warn("Could not create", newClassName, "at", current:GetFullName())
 				return nil
 			end
+		end
+
+		-- For the last part, store the fsName attribute if it differs from the real name
+		if isLastPart and fsName and fsName ~= child.Name then
+			child:SetAttribute("_rtvs_fsName", fsName)
 		end
 
 		current = child
@@ -151,9 +179,11 @@ function Deserializer.applyProperties(instance, properties)
 
 	for propName, propValue in pairs(properties) do
 		if propName == "Attributes" then
-			-- Set custom attributes
+			-- Set custom attributes (skip internal _rtvs_ attributes)
 			for attrName, attrValue in pairs(propValue) do
-				instance:SetAttribute(attrName, attrValue)
+				if not attrName:match("^_rtvs_") then
+					instance:SetAttribute(attrName, attrValue)
+				end
 			end
 		else
 			-- Set regular properties
@@ -240,7 +270,8 @@ function Deserializer.applyChange(change)
 	-- Check if this is a .lua file (script)
 	if filePath:match("%.lua$") then
 		local className = Deserializer.inferClassName(filePath)
-		local instance = Deserializer.findOrCreateInstance(pathParts, className)
+		-- For scripts without JSON, we don't have the real name, so use folder name
+		local instance = Deserializer.findOrCreateInstance(pathParts, className, nil, nil)
 
 		if instance and instance:IsA("LuaSourceContainer") then
 			-- Update script source
@@ -264,6 +295,10 @@ function Deserializer.applyChange(change)
 			return false
 		end
 
+		-- Extract real name and fsName for deduplication handling
+		local realName = properties.Name
+		local fsName = properties._fsName -- Only present if folder name differs from instance name
+
 		-- Check if this is a service-level __main__.json (e.g., "Workspace/__main__.json")
 		if #pathParts == 1 then
 			-- This is a service-level properties file
@@ -281,9 +316,15 @@ function Deserializer.applyChange(change)
 			end
 		else
 			-- This is a regular instance __main__.json
-			local instance = Deserializer.findOrCreateInstance(pathParts, properties.ClassName)
+			-- Pass the real name from JSON and fsName for proper instance creation/lookup
+			local instance = Deserializer.findOrCreateInstance(pathParts, properties.ClassName, realName, fsName)
 
 			if instance then
+				-- Ensure the instance has the correct name (may have been created with wrong name before)
+				if realName and instance.Name ~= realName then
+					instance.Name = realName
+				end
+
 				-- Apply properties
 				Deserializer.applyProperties(instance, properties.Properties)
 				print("Updated properties:", instance:GetFullName())

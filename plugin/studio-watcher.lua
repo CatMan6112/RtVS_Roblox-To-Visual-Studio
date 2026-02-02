@@ -1,16 +1,11 @@
 -- RtVS Plugin: Studio Watcher
--- Watches for changes in Studio instances and sends them to the server
--- Used when "Prioritize Studio" mode is enabled
-
 local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 
 local StudioWatcher = {}
 
--- Server configuration
 local SERVER_URL = "http://localhost:8080"
 
--- Helper function to serialize Vector3
 local function serializeVector3(vector)
 	return {
 		X = vector.X,
@@ -95,10 +90,29 @@ local function getInstanceProperties(instance)
 
 	local attributes = instance:GetAttributes()
 	if next(attributes) ~= nil then
-		properties.Attributes = attributes
+		-- Filter out internal RtVS attributes
+		local filteredAttributes = {}
+		for name, value in pairs(attributes) do
+			if not name:match("^_rtvs_") then
+				filteredAttributes[name] = value
+			end
+		end
+		if next(filteredAttributes) ~= nil then
+			properties.Attributes = filteredAttributes
+		end
 	end
 
 	return properties
+end
+
+-- Get the file system name for an instance
+-- Uses _rtvs_fsName attribute if set (for deduplicated names), otherwise uses instance Name
+local function getFileSystemName(instance)
+	local fsName = instance:GetAttribute("_rtvs_fsName")
+	if fsName then
+		return fsName
+	end
+	return instance.Name
 end
 
 -- Get the file path for an instance
@@ -107,8 +121,9 @@ local function getInstanceFilePath(instance)
 	local current = instance
 
 	-- Build path from instance to root service
+	-- Use file system names (which may differ from instance names for duplicates)
 	while current and current.Parent ~= game do
-		table.insert(pathParts, 1, current.Name)
+		table.insert(pathParts, 1, getFileSystemName(current))
 		current = current.Parent
 	end
 

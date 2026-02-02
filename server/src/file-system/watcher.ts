@@ -6,6 +6,7 @@
 import chokidar, { FSWatcher } from "chokidar";
 import path from "path";
 import { FileChange } from "../types/api";
+import { SERVICE_NAMES_SET } from "../types/roblox";
 
 export class FileSystemWatcher {
   private watcher: FSWatcher | null = null;
@@ -93,6 +94,14 @@ export class FileSystemWatcher {
 
     // Convert absolute path to relative path from synced-game directory
     const relativePath = path.relative(this.watchPath, filePath);
+
+    // Only queue changes that are inside a known Roblox service directory.
+    // Files at the root of synced-game (e.g. claude.md, .gitignore) are not
+    // part of the sync and must be ignored to avoid confusing the plugin.
+    const firstSegment = relativePath.split(/[/\\]/)[0];
+    if (!SERVICE_NAMES_SET.has(firstSegment)) {
+      return;
+    }
 
     const change: FileChange = {
       type,

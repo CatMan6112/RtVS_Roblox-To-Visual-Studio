@@ -16,6 +16,13 @@ export function sanitizeName(name: string): string {
     .replace(/\x00/g, "") // Remove null bytes
     .trim();
 
+  // Remove trailing periods and spaces - Windows silently strips these
+  // which causes path mismatches and inaccessible folders
+  sanitized = sanitized.replace(/[.\s]+$/, "");
+
+  // Also remove leading periods (hidden files on Unix, problematic on Windows)
+  sanitized = sanitized.replace(/^\.+/, "");
+
   // Handle reserved Windows names
   const reserved = [
     "CON", "PRN", "AUX", "NUL",

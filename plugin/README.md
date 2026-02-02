@@ -301,12 +301,12 @@ The plugin performs automatic version checking on startup.
 
 **On connection**:
 1. Plugin sends `GET /ping` to server
-2. Server responds with `{ status: "ok", version: "0.1.2" }`
+2. Server responds with `{ status: "ok", version: "0.1.3" }`
 3. Plugin compares versions
 
 **If versions match**:
 ```
-RtVS Server connected (v0.1.2)
+RtVS Server connected (v0.1.3)
 ```
 
 **If plugin is outdated**:
@@ -324,7 +324,7 @@ Download RtVS.rbxm and place it in your Plugins folder:
 Plugin functionality has been suspended.
 ========================================
 Plugin Version: 0.1.0
-Server Version: 0.1.2
+Server Version: 0.1.3
 ========================================
 ```
 
@@ -337,7 +337,7 @@ Outdated Server!! Please Update Via Github at
 https://github.com/CatMan6112/RtVS_Roblox-To-Visual-Studio/!!
 Plugin Functionality has been Suspended!!
 ========================================
-Plugin Version: 0.1.2
+Plugin Version: 0.1.3
 Server Version: 0.1.0
 ========================================
 ```
@@ -432,7 +432,72 @@ Open **Output** window to see:
 - File changes being applied
 - Errors and warnings
 
+## For Developers: Publishing Updates
+
+When releasing a new version:
+
+### 1. Update Version Numbers
+```bash
+# Update all version references
+# - version.json (root)
+# - server/package.json
+# - server/src/api/health.ts (VERSION constant)
+# - plugin/main.lua (PLUGIN_VERSION constant)
+```
+
+### 2. Update Changelog
+Add release notes to `version.json`:
+```json
+{
+  "version": "0.2.0",
+  "releaseDate": "2026-01-25",
+  "changelog": {
+    "0.2.0": [
+      "Added support for terrain serialization",
+      "Improved performance for large games"
+    ]
+  }
+}
+```
+
+### 3. Commit and Push
+```bash
+git add .
+git commit -m "Release v0.2.0"
+git push origin main
+```
+
+### 4. Build and Commit Plugin
+1. Build the plugin: `npm run deploy` in `/server`
+2. Commit the updated `RtVS.rbxm` to the repository
+
+### 5. Users Will Auto-Detect Updates
+- Existing servers will check for updates within 1 hour
+- Existing plugins will see update notification on next connection
+
+## Architecture
+
+### Server-Side Version Checking
+
+**File**: `/server/src/utils/version-checker.ts`
+
+- Fetches `version.json` from GitHub via HTTPS
+- Caches latest version in memory
+- Compares semantic versions (major.minor.patch)
+- Checks every hour for updates
+- Includes the latest version in `/ping` and `/status` responses
+
+### Plugin-Side Version Checking
+
+**File**: `/plugin/main.lua`
+
+- Checks server version on connection
+- Receives latest version from server
+- Compares plugin version with server version (required)
+- Compares plugin version with latest version (informational)
+- Suspends functionality if version mismatch with server
+
 ## Version
 
-Plugin Version: 0.1.2 (Public Beta)
+Plugin Version: 0.1.3 (Public Beta)
 
