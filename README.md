@@ -71,6 +71,7 @@ See `plugin/README.md` for detailed usage information and workflows.
 - Node.js 18+
 - Roblox Studio
 - Windows or macOS
+- Now Supports Linux!
 
 ## License
 
