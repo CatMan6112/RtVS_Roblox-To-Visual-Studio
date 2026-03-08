@@ -7,8 +7,9 @@ import { GameData } from "../types/roblox";
 import { SyncResponse } from "../types/api";
 import { FileSystemWriter } from "../file-system/writer";
 import { updateSyncStats } from "./health";
-import { getWatcher } from "./changes";
+import { getWatcher, getChangeTracker } from "./changes";
 import { pathConfig } from "../config/path-config";
+import { logger } from "../utils/logger";
 
 /**
  * POST /sync - Receive game data from plugin
@@ -35,12 +36,14 @@ export async function handleSync(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    console.log(`Received sync request with ${gameData.Services.length} services`);
+    logger.info(`Received sync request with ${gameData.Services.length} services`);
 
-    // Pause file watcher to avoid detecting our own writes
+    // Enter bulk write mode to suppress all watcher events during full sync
+    const changeTracker = getChangeTracker();
+    changeTracker.beginBulkWrite();
+
     const watcher = getWatcher();
     if (watcher) {
-      watcher.pause();
       watcher.clearQueue(); // Clear any pending changes
     }
 
@@ -55,15 +58,13 @@ export async function handleSync(req: Request, res: Response): Promise<void> {
       // Update stats
       updateSyncStats(filesWritten);
 
-      console.log(`Sync complete: ${filesWritten} files written to ${SYNCED_GAME_PATH}`);
+      logger.info(`Sync complete: ${filesWritten} files written to ${SYNCED_GAME_PATH}`);
 
       // Wait a bit for all file writes to settle
       await new Promise((resolve) => setTimeout(resolve, 500));
     } finally {
-      // Resume file watcher
-      if (watcher) {
-        watcher.resume();
-      }
+      // Exit bulk write mode
+      changeTracker.endBulkWrite();
     }
 
     // Send success response
@@ -75,7 +76,7 @@ export async function handleSync(req: Request, res: Response): Promise<void> {
 
     res.json(response);
   } catch (error: any) {
-    console.error("Sync error:", error);
+    logger.error("Sync error:", error);
 
     const response: SyncResponse = {
       success: false,

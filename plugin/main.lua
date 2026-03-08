@@ -1,9 +1,17 @@
 -- RtVS Plugin: Main Entry Point
 local HttpService = game:GetService("HttpService")
 local ScriptEditorService = game:GetService("ScriptEditorService")
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
 
 local Deserializer = require(script.Parent.deserializer)
 local StudioWatcher = require(script.Parent["studio-watcher"])
+
+-- Wire up echo suppression: before the deserializer applies a change from the
+-- file system, register it with StudioWatcher so the resulting Changed event
+-- doesn't get re-sent back to the server.
+Deserializer.onBeforeApply = function(filePath)
+	StudioWatcher.suppressEcho(filePath)
+end
 
 local SERVER_URL = "http://localhost:8080"
 local POLL_INTERVAL = 2
@@ -24,11 +32,14 @@ local syncProgress = {
 }
 
 local versionMismatch = false
+local lastFullSyncTime = 0
+local RECENT_SYNC_THRESHOLD = 60 -- seconds
 
 local SYNC_MODE = {
 	NONE = "none",
 	PRIORITIZE_STUDIO = "prioritize_studio",
-	PRIORITIZE_SERVER = "prioritize_server"
+	PRIORITIZE_SERVER = "prioritize_server",
+	BIDIRECTIONAL = "bidirectional"
 }
 
 local currentMode = SYNC_MODE.NONE
@@ -95,6 +106,7 @@ local function testConnection()
 		warn("Download RtVS.rbxm and place it in your Plugins folder:")
 		warn("  Windows: %LOCALAPPDATA%\\Roblox\\Plugins\\")
 		warn("  macOS: ~/Documents/Roblox/Plugins/")
+		warn("  Linux (Vinegar): ~/.var/app/org.vinegarhq.Vinegar/data/vinegar/prefixes/studio/drive_c/users/<you>/AppData/Local/Roblox/Plugins/")
 		warn("")
 		warn("Plugin functionality has been suspended.")
 		warn("========================================")
@@ -141,6 +153,7 @@ local function testConnection()
 			warn("Replace the plugin file in your Plugins folder:")
 			warn("  Windows: %LOCALAPPDATA%\\Roblox\\Plugins\\")
 			warn("  macOS: ~/Documents/Roblox/Plugins/")
+			warn("  Linux (Vinegar): ~/.var/app/org.vinegarhq.Vinegar/data/vinegar/prefixes/studio/drive_c/users/<you>/AppData/Local/Roblox/Plugins/")
 			warn("========================================")
 		end
 	end
@@ -195,8 +208,8 @@ local function pollForChanges()
 	if #data.changes > 0 then
 		print("Received", #data.changes, "changes from server")
 
-		-- Close all script editors before applying changes
-		closeAllScriptEditors()
+		-- Set undo waypoint before applying changes (enables Ctrl+Z rollback)
+		ChangeHistoryService:SetWaypoint("RtVS: Before " .. #data.changes .. " file changes")
 
 		for _, change in ipairs(data.changes) do
 			local success, error = pcall(function()
@@ -208,7 +221,10 @@ local function pollForChanges()
 			end
 		end
 
-		print("Applied all changes")
+		-- Set waypoint after applying changes
+		ChangeHistoryService:SetWaypoint("RtVS: Applied " .. #data.changes .. " file changes")
+
+		print("Applied all changes (Ctrl+Z to undo)")
 	end
 end
 
@@ -670,9 +686,6 @@ local function sendInstanceRecursive(sessionId, parentPath, instance, instanceDa
 
 	-- If this instance fits within the limit, send it whole
 	if instanceSize <= MAX_CHUNK_SIZE then
-		if depth > 0 then -- Don't log for top-level (handled by caller)
-			print(indent .. "Sending " .. instanceData.Name .. " (" .. math.floor(instanceSize/1024) .. "KB)")
-		end
 		local sent = sendDeepChunk(sessionId, parentPath, instanceData)
 		if not sent then
 			warn(indent .. "Failed to send: " .. instancePath)
@@ -682,7 +695,6 @@ local function sendInstanceRecursive(sessionId, parentPath, instance, instanceDa
 	end
 
 	-- Instance is too big - send it without children, then recurse
-	print(indent .. "Chunking " .. instanceData.Name .. " (" .. math.floor(instanceSize/1024) .. "KB, " .. #(instanceData.Children or {}) .. " children)...")
 
 	-- Send the instance without children
 	local instanceBase = {
@@ -710,7 +722,6 @@ local function sendInstanceRecursive(sessionId, parentPath, instance, instanceDa
 		if childSize > MAX_CHUNK_SIZE then
 			-- First, flush any accumulated small children
 			if #childrenToSend > 0 then
-				print(indent .. "   Sending batch of " .. #childrenToSend .. " small children...")
 				for _, smallChild in ipairs(childrenToSend) do
 					local sent = sendDeepChunk(sessionId, instancePath, smallChild)
 					if not sent then
@@ -731,7 +742,6 @@ local function sendInstanceRecursive(sessionId, parentPath, instance, instanceDa
 			-- Small enough - accumulate for batch sending
 			-- But if batch would exceed limit, flush first
 			if currentBatchSize + childSize > MAX_CHUNK_SIZE and #childrenToSend > 0 then
-				print(indent .. "   Sending batch of " .. #childrenToSend .. " children...")
 				for _, batchChild in ipairs(childrenToSend) do
 					local sent = sendDeepChunk(sessionId, instancePath, batchChild)
 					if not sent then
@@ -755,7 +765,6 @@ local function sendInstanceRecursive(sessionId, parentPath, instance, instanceDa
 
 	-- Send remaining accumulated children
 	if #childrenToSend > 0 then
-		print(indent .. "   Sending final batch of " .. #childrenToSend .. " children...")
 		for _, childData in ipairs(childrenToSend) do
 			local sent = sendDeepChunk(sessionId, instancePath, childData)
 			if not sent then
@@ -765,7 +774,6 @@ local function sendInstanceRecursive(sessionId, parentPath, instance, instanceDa
 		end
 	end
 
-	print(indent .. instanceData.Name .. " complete")
 	return true
 end
 
@@ -957,8 +965,10 @@ local function readAllServices()
 				print("   Files written: " .. filesWritten)
 				print("   Total time: " .. formatTime(totalTime))
 				print("========================================")
+				return true
 			else
 				warn("Failed to complete chunked sync")
+				return nil
 			end
 		else
 			-- Small game - use single request sync
@@ -991,10 +1001,28 @@ local function readAllServices()
 
 	if not success then
 		warn("Error reading game services:", result)
+		warn("========================================")
+		warn("SYNC FAILED")
+		warn("========================================")
+		warn("An error occurred during sync.")
+		warn("Check the output above for details.")
+		warn("========================================")
+	elseif result == nil then
+		warn("========================================")
+		warn("SYNC FAILED")
+		warn("========================================")
+		warn("A chunk failed to send to the server.")
+		warn("The server may be unreachable or crashed.")
+		warn("Please check the server is running and try again.")
+		warn("========================================")
 	else
+		lastFullSyncTime = tick()
 		print("Successfully read all game services!")
 	end
 end
+
+-- Disable bidirectional mode (forward declaration for use by other mode functions)
+local disableBidirectional
 
 -- Enable "Prioritize Studio" mode
 local function enablePrioritizeStudio()
@@ -1008,8 +1036,11 @@ local function enablePrioritizeStudio()
 		return
 	end
 
-	-- Disable other mode first
+	-- Disable other modes first
 	if currentMode == SYNC_MODE.PRIORITIZE_SERVER then
+		stopPolling()
+	elseif currentMode == SYNC_MODE.BIDIRECTIONAL then
+		StudioWatcher.stop()
 		stopPolling()
 	end
 
@@ -1018,8 +1049,13 @@ local function enablePrioritizeStudio()
 	print("   Studio is now the source of truth")
 	print("   Changes in Studio will be sent to the file system")
 
-	-- Do an initial full sync
-	readAllServices()
+	-- Do an initial full sync (skip if a full sync was done very recently)
+	local timeSinceLastSync = tick() - lastFullSyncTime
+	if timeSinceLastSync < RECENT_SYNC_THRESHOLD then
+		print(string.format("Skipping initial sync (full sync was done %.0fs ago)", timeSinceLastSync))
+	else
+		readAllServices()
+	end
 
 	-- Start watching for Studio changes
 	StudioWatcher.start()
@@ -1048,9 +1084,12 @@ local function enablePrioritizeServer()
 		return
 	end
 
-	-- Disable other mode first
+	-- Disable other modes first
 	if currentMode == SYNC_MODE.PRIORITIZE_STUDIO then
 		StudioWatcher.stop()
+	elseif currentMode == SYNC_MODE.BIDIRECTIONAL then
+		StudioWatcher.stop()
+		stopPolling()
 	end
 
 	currentMode = SYNC_MODE.PRIORITIZE_SERVER
@@ -1071,6 +1110,56 @@ local function disablePrioritizeServer()
 	stopPolling()
 	currentMode = SYNC_MODE.NONE
 	print("Prioritize Server mode disabled")
+end
+
+-- Enable "Bidirectional" mode
+local function enableBidirectional()
+	if versionMismatch then
+		warn("Cannot enable Bidirectional mode: Version mismatch detected")
+		return
+	end
+
+	if currentMode == SYNC_MODE.BIDIRECTIONAL then
+		print("Already in Bidirectional mode")
+		return
+	end
+
+	-- Disable other modes first
+	if currentMode == SYNC_MODE.PRIORITIZE_STUDIO then
+		StudioWatcher.stop()
+	elseif currentMode == SYNC_MODE.PRIORITIZE_SERVER then
+		stopPolling()
+	end
+
+	currentMode = SYNC_MODE.BIDIRECTIONAL
+	print("Bidirectional sync enabled")
+	print("   Changes sync in BOTH directions simultaneously")
+	print("   Ctrl+Z in Studio to undo file-system changes")
+
+	-- Do initial full sync (Studio -> FS) to establish baseline
+	-- Skip if a full sync was done very recently to avoid redundant 5-minute syncs
+	local timeSinceLastSync = tick() - lastFullSyncTime
+	if timeSinceLastSync < RECENT_SYNC_THRESHOLD then
+		print(string.format("Skipping initial sync (full sync was done %.0fs ago)", timeSinceLastSync))
+	else
+		readAllServices()
+	end
+
+	-- Start both directions
+	StudioWatcher.start()
+	startPolling()
+end
+
+-- Disable "Bidirectional" mode
+disableBidirectional = function()
+	if currentMode ~= SYNC_MODE.BIDIRECTIONAL then
+		return
+	end
+
+	StudioWatcher.stop()
+	stopPolling()
+	currentMode = SYNC_MODE.NONE
+	print("Bidirectional sync disabled")
 end
 
 -- State for full sync confirmation
@@ -1128,9 +1217,27 @@ local prioritizeServerButton = toolbar:CreateButton(
 	"rbxassetid://4458901886"
 )
 
+local bidirectionalButton = toolbar:CreateButton(
+	"Bidirectional",
+	"Two-way sync: changes in Studio AND files sync simultaneously",
+	"rbxassetid://4458901886"
+)
+
 local fullSyncButton = toolbar:CreateButton(
 	"Full Sync",
 	"WARNING: Overwrite all server files with current Studio state (use with caution!)",
+	"rbxassetid://4458901886"
+)
+
+local undoSyncButton = toolbar:CreateButton(
+	"Undo Last Sync",
+	"Undo the last batch of file changes applied to Studio (Ctrl+Z)",
+	"rbxassetid://4458901886"
+)
+
+local applyCommitsButton = toolbar:CreateButton(
+	"Apply Commits",
+	"Commit Sync: Fetch and apply all pending file commits to Studio",
 	"rbxassetid://4458901886"
 )
 
@@ -1143,6 +1250,7 @@ prioritizeStudioButton.Click:Connect(function()
 		enablePrioritizeStudio()
 		prioritizeStudioButton:SetActive(true)
 		prioritizeServerButton:SetActive(false)
+		bidirectionalButton:SetActive(false)
 	end
 end)
 
@@ -1154,6 +1262,19 @@ prioritizeServerButton.Click:Connect(function()
 		enablePrioritizeServer()
 		prioritizeServerButton:SetActive(true)
 		prioritizeStudioButton:SetActive(false)
+		bidirectionalButton:SetActive(false)
+	end
+end)
+
+bidirectionalButton.Click:Connect(function()
+	if currentMode == SYNC_MODE.BIDIRECTIONAL then
+		disableBidirectional()
+		bidirectionalButton:SetActive(false)
+	else
+		enableBidirectional()
+		bidirectionalButton:SetActive(true)
+		prioritizeStudioButton:SetActive(false)
+		prioritizeServerButton:SetActive(false)
 	end
 end)
 
@@ -1161,10 +1282,76 @@ fullSyncButton.Click:Connect(function()
 	performFullSync()
 end)
 
+undoSyncButton.Click:Connect(function()
+	ChangeHistoryService:Undo()
+	print("Undid last sync batch")
+end)
+
+applyCommitsButton.Click:Connect(function()
+	if versionMismatch then
+		warn("Cannot apply commits: Version mismatch detected")
+		return
+	end
+
+	local success, response = pcall(function()
+		return HttpService:GetAsync(SERVER_URL .. "/commits")
+	end)
+
+	if not success then
+		warn("RtVS: Could not reach server for commits:", response)
+		return
+	end
+
+	local data = HttpService:JSONDecode(response)
+	if not data or not data.commits then
+		warn("RtVS: Invalid commits response")
+		return
+	end
+
+	if #data.commits == 0 then
+		print("RtVS: No pending commits")
+		return
+	end
+
+	print("RtVS: Applying " .. #data.commits .. " commit(s)...")
+	ChangeHistoryService:SetWaypoint("RtVS: Before applying commits")
+
+	local applied = 0
+	for _, commit in ipairs(data.commits) do
+		local applySuccess, err = pcall(function()
+			Deserializer.applyChange({
+				type = commit.type == "create" and "create" or (commit.type == "delete" and "delete" or "update"),
+				path = commit.path,
+				content = commit.resolvedContent,
+			})
+		end)
+
+		if applySuccess then
+			applied = applied + 1
+		else
+			warn("RtVS: Failed to apply commit for " .. commit.path .. ": " .. tostring(err))
+		end
+	end
+
+	ChangeHistoryService:SetWaypoint("RtVS: Applied " .. applied .. " commit(s)")
+	print("RtVS: Applied " .. applied .. "/" .. #data.commits .. " commits (Ctrl+Z to undo)")
+
+	-- Notify server that commits have been applied
+	pcall(function()
+		HttpService:PostAsync(
+			SERVER_URL .. "/commits/applied",
+			HttpService:JSONEncode({}),
+			Enum.HttpContentType.ApplicationJson
+		)
+	end)
+end)
+
 -- Plugin initialization
 print("RtVS Plugin loaded!")
 print("Testing server connection...")
 if testConnection() then
+	print("TIP: Use 'Bidirectional' for two-way real-time sync")
 	print("TIP: Use 'Prioritize Studio' to make Studio the source of truth")
 	print("TIP: Use 'Prioritize Server' to make files the source of truth")
+	print("TIP: Use 'Undo Last Sync' or Ctrl+Z to rollback file changes")
 end

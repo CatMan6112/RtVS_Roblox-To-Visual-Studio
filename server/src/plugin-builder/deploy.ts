@@ -4,6 +4,7 @@
  */
 
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import path from 'path';
 import os from 'os';
 import { buildPlugin } from './rbxm-builder';
@@ -28,8 +29,36 @@ function getRobloxPluginsPath(): string {
       const homeDir = process.env.HOME || os.homedir();
       return path.join(homeDir, 'Documents', 'Roblox', 'Plugins');
 
-    case 'linux':
-      throw new Error('Roblox Studio is not available on Linux');
+    case 'linux': {
+      // Linux: Roblox Studio via Vinegar (Wine prefix)
+      const linuxHome = process.env.HOME || os.homedir();
+      const username = os.userInfo().username;
+      const pluginsSubPath = path.join('drive_c', 'users', username, 'AppData', 'Local', 'Roblox', 'Plugins');
+
+      if (username === 'root') {
+        console.warn('\nWarning: Running as root. The deployed plugin path will use "root" as the');
+        console.warn('Wine user, which likely won\'t match your Vinegar installation.');
+        console.warn('Run this command as your normal user instead.\n');
+      }
+
+      // Vinegar prefix locations (native, then Flatpak variants)
+      const prefixRoots = [
+        path.join(linuxHome, '.local', 'share', 'vinegar', 'prefix'),
+        path.join(linuxHome, '.var', 'app', 'org.vinegarhq.Vinegar', 'data', 'vinegar', 'prefixes', 'studio'),
+        path.join(linuxHome, '.var', 'app', 'io.github.vinegarhq.Vinegar', 'data', 'vinegar', 'prefixes', 'studio'),
+      ];
+
+      for (const prefixRoot of prefixRoots) {
+        if (fsSync.existsSync(prefixRoot)) {
+          return path.join(prefixRoot, pluginsSubPath);
+        }
+      }
+
+      throw new Error(
+        'Vinegar Wine prefix not found. Make sure Vinegar is installed.\n' +
+        'Install Vinegar from: https://vinegarhq.org/'
+      );
+    }
 
     default:
       throw new Error(`Unsupported platform: ${platform}`);
@@ -95,6 +124,9 @@ async function deploy(): Promise<void> {
       } else if (error.message.includes('LOCALAPPDATA')) {
         console.error('\nCould not locate the Roblox plugins folder.');
         console.error('Make sure Roblox Studio is installed.');
+      } else if (error.message.includes('Vinegar')) {
+        console.error('\nCould not locate the Vinegar Wine prefix.');
+        console.error('Make sure Vinegar is installed: https://vinegarhq.org/');
       }
     } else {
       console.error(`Error: ${String(error)}`);

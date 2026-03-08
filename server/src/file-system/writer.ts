@@ -9,6 +9,7 @@ import { GameData, RobloxInstance, isScriptInstance, hasChildren, SERVICE_NAMES_
 import { sanitizeName, pathArrayToAbsolute, makeUniqueName } from "./path-generator";
 import { serializeProperties, toJsonString } from "../serializers/property-writer";
 import { buildRootIndex, indexToJsonString } from "./index-builder";
+import { logger } from "../utils/logger";
 
 export interface WriteProgress {
   phase: "preparing" | "writing" | "complete";
@@ -37,6 +38,9 @@ export class FileSystemWriter {
   private pendingWrites: Array<{ filePath: string; content: string }> = [];
   private writeResolvers: Array<() => void> = [];
   private createdDirs = new Set<string>();
+
+  // Track used names per parent path for incremental writes (handles Roblox duplicate names)
+  private usedNamesPerPath = new Map<string, Set<string>>();
 
   constructor(basePath: string) {
     this.basePath = basePath;
@@ -133,7 +137,7 @@ export class FileSystemWriter {
   /**
    * Prepare the output directory (create or clear it)
    */
-  private async prepareOutputDirectory(): Promise<void> {
+  async prepareOutputDirectory(): Promise<void> {
     try {
       // Check if directory exists
       await fs.access(this.basePath);
@@ -204,7 +208,7 @@ export class FileSystemWriter {
         this.onWriteComplete();
       })
       .catch((err) => {
-        console.error(`Failed to write ${filePath}:`, err.message);
+        logger.error(`Failed to write ${filePath}:`, err);
         this.filesWritten++;
         this.onWriteComplete();
       });
@@ -234,7 +238,7 @@ export class FileSystemWriter {
   /**
    * Wait for all pending writes to complete
    */
-  private async flushWrites(): Promise<void> {
+  async flushWrites(): Promise<void> {
     while (this.activeWrites > 0 || this.pendingWrites.length > 0) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
@@ -335,6 +339,49 @@ export class FileSystemWriter {
       properties._fsName = fsName;
     }
     await this.queueWrite(path.join(dirPath, "__main__.json"), toJsonString(properties));
+  }
+
+  /**
+   * Write a single service instance to disk immediately.
+   * Used by write-on-arrival chunked sync.
+   */
+  async writeServiceToDisk(serviceData: RobloxInstance): Promise<void> {
+    await this.streamWriteInstance(serviceData, []);
+    await new Promise(resolve => setImmediate(resolve));
+  }
+
+  /**
+   * Write a deep chunk to disk at the specified parent path.
+   * parentPath is like "Workspace/Folder1" — the instance is written as a child of that path.
+   * Used by write-on-arrival chunked sync.
+   */
+  async writeDeepChunkToDisk(parentPath: string, instanceData: RobloxInstance): Promise<void> {
+    const pathParts = parentPath.split("/").filter(p => p.length > 0);
+    const sanitizedParts = pathParts.map(p => sanitizeName(p));
+
+    // Handle duplicate names: track used names per parent path
+    const parentKey = sanitizedParts.join("/");
+    let usedNames = this.usedNamesPerPath.get(parentKey);
+    if (!usedNames) {
+      usedNames = new Set<string>();
+      this.usedNamesPerPath.set(parentKey, usedNames);
+    }
+
+    const childSanitized = sanitizeName(instanceData.Name);
+    const uniqueName = makeUniqueName(childSanitized, usedNames);
+    usedNames.add(uniqueName);
+
+    await this.streamWriteInstance(instanceData, sanitizedParts, uniqueName);
+  }
+
+  /**
+   * Write an index.json file from pre-built content
+   */
+  async writeIndexFile(content: string): Promise<void> {
+    await this.queueWrite(
+      path.join(this.basePath, "index.json"),
+      content
+    );
   }
 
   /**

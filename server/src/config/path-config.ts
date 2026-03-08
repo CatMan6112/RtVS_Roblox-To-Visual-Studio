@@ -6,9 +6,14 @@ import readlineSync from "readline-sync";
 import path from "path";
 import fs from "fs/promises";
 import os from "os";
+import { logger } from "../utils/logger";
+
+const DEFAULT_IGNORE_PATHS = ["ServerStorage/MoonAnimator2Saves", ".rtvs"];
 
 export class PathConfig {
   private storagePath: string = "";
+  private ignorePaths: string[] = DEFAULT_IGNORE_PATHS;
+  private commitMode: boolean = false;
   private configFilePath: string;
 
   constructor() {
@@ -38,32 +43,29 @@ export class PathConfig {
   /**
    * Load the last used path from config file
    */
-  private async loadLastUsedPath(): Promise<string | null> {
+  private async loadConfig(): Promise<{ lastUsedPath: string | null; ignorePaths: string[]; commitMode: boolean }> {
     try {
       const configData = await fs.readFile(this.configFilePath, "utf-8");
       const config = JSON.parse(configData);
-      return config.lastUsedPath || null;
-    } catch (error) {
+      return {
+        lastUsedPath: config.lastUsedPath || null,
+        ignorePaths: Array.isArray(config.ignorePaths) ? config.ignorePaths : DEFAULT_IGNORE_PATHS,
+        commitMode: config.commitMode === true,
+      };
+    } catch {
       // Config file doesn't exist or is invalid - that's okay
-      return null;
+      return { lastUsedPath: null, ignorePaths: DEFAULT_IGNORE_PATHS, commitMode: false };
     }
   }
 
-  /**
-   * Save the current path as the last used path
-   */
-  private async saveLastUsedPath(pathToSave: string): Promise<void> {
+  private async saveConfig(lastUsedPath: string, ignorePaths: string[]): Promise<void> {
     try {
-      // Ensure config directory exists
       const configDir = path.dirname(this.configFilePath);
       await fs.mkdir(configDir, { recursive: true });
-
-      // Write config file
-      const config = { lastUsedPath: pathToSave };
+      const config = { lastUsedPath, ignorePaths };
       await fs.writeFile(this.configFilePath, JSON.stringify(config, null, 2), "utf-8");
     } catch (error) {
-      console.warn("Could not save last used path:", error);
-      // Non-critical error, continue anyway
+      logger.warn(`Could not save config: ${String(error)}`);
     }
   }
 
@@ -76,7 +78,9 @@ export class PathConfig {
     console.log("Where would you like to store synced game files?");
 
     // Try to load the last used path
-    const lastUsedPath = await this.loadLastUsedPath();
+    const { lastUsedPath, ignorePaths, commitMode } = await this.loadConfig();
+    this.ignorePaths = ignorePaths;
+    this.commitMode = commitMode;
     const defaultPath = lastUsedPath || path.join(process.cwd(), "..", "synced-game");
 
     if (lastUsedPath) {
@@ -100,8 +104,8 @@ export class PathConfig {
 
     this.storagePath = resolvedPath;
 
-    // Save this path as the last used path
-    await this.saveLastUsedPath(this.storagePath);
+    // Save config
+    await this.saveConfig(this.storagePath, this.ignorePaths);
 
     console.log(`Storage path set to: ${this.storagePath}\n`);
     console.log("─".repeat(50));
@@ -120,6 +124,25 @@ export class PathConfig {
   }
 
   /**
+   * Set the storage path directly (used in tests to bypass interactive prompt)
+   */
+  setStoragePath(newPath: string): void {
+    this.storagePath = newPath;
+  }
+
+  getIgnorePaths(): string[] {
+    return this.ignorePaths;
+  }
+
+  getCommitMode(): boolean {
+    return this.commitMode;
+  }
+
+  getRtvsDir(): string {
+    return path.join(this.storagePath, ".rtvs");
+  }
+
+  /**
    * Ensure the storage directory exists
    */
   async ensureStorageDirectory(): Promise<void> {
@@ -127,9 +150,9 @@ export class PathConfig {
       await fs.access(this.storagePath);
     } catch (error: any) {
       if (error.code === "ENOENT") {
-        console.log(`Creating storage directory: ${this.storagePath}`);
+        logger.info(`Creating storage directory: ${this.storagePath}`);
         await fs.mkdir(this.storagePath, { recursive: true });
-        console.log("Directory created successfully\n");
+        logger.info("Directory created successfully");
       } else {
         throw error;
       }

@@ -1,7 +1,12 @@
 -- RtVS Plugin: Deserializer
 local HttpService = game:GetService("HttpService")
+local ScriptEditorService = game:GetService("ScriptEditorService")
 
 local Deserializer = {}
+
+-- Callback invoked before applying a change, for echo suppression.
+-- Set by main.lua to register changes with StudioWatcher.suppressEcho.
+Deserializer.onBeforeApply = nil -- function(filePath) end
 
 local function deserializeVector3(data)
 	if type(data) ~= "table" then return nil end
@@ -246,6 +251,11 @@ function Deserializer.applyChange(change)
 	local pathParts = Deserializer.parsePath(filePath)
 
 	if changeType == "delete" then
+		-- Suppress echo for the deleted path
+		if Deserializer.onBeforeApply then
+			Deserializer.onBeforeApply(filePath)
+		end
+
 		-- Don't try to delete services or their __main__.json files
 		if #pathParts == 1 then
 			-- This is a service-level file, ignore deletion
@@ -269,13 +279,48 @@ function Deserializer.applyChange(change)
 
 	-- Check if this is a .lua file (script)
 	if filePath:match("%.lua$") then
+		-- Suppress echo for this path AND sibling JSON path
+		if Deserializer.onBeforeApply then
+			Deserializer.onBeforeApply(filePath)
+			-- Also suppress the sibling __main__.json (scripts with children
+			-- trigger Changed events that send both .lua and .json)
+			if filePath:match("__main__%.lua$") then
+				local jsonPath = filePath:gsub("__main__%.lua$", "__main__.json")
+				Deserializer.onBeforeApply(jsonPath)
+			end
+		end
+
 		local className = Deserializer.inferClassName(filePath)
 		-- For scripts without JSON, we don't have the real name, so use folder name
 		local instance = Deserializer.findOrCreateInstance(pathParts, className, nil, nil)
 
 		if instance and instance:IsA("LuaSourceContainer") then
-			-- Update script source
-			instance.Source = content
+			-- Update script source (use UpdateSourceAsync to also refresh the editor buffer)
+			local editSuccess = pcall(function()
+				ScriptEditorService:UpdateSourceAsync(instance, function(_oldSource)
+					return content
+				end)
+			end)
+			if not editSuccess then
+				instance.Source = content
+			end
+
+			-- Store original file extension to preserve aliases (e.g. .local.lua) on round-trip.
+			-- Only for standalone scripts (not __main__.lua folder-scripts).
+			if not filePath:match("__main__%.lua$") then
+				local ext
+				if filePath:match("%.local%.lua$") then
+					ext = ".local.lua"
+				elseif filePath:match("%.client%.lua$") then
+					ext = ".client.lua"
+				elseif filePath:match("%.module%.lua$") then
+					ext = ".module.lua"
+				else
+					ext = ".lua"
+				end
+				instance:SetAttribute("_rtvs_fileExt", ext)
+			end
+
 			print("Updated script:", instance:GetFullName())
 			return true
 		else
@@ -285,6 +330,15 @@ function Deserializer.applyChange(change)
 
 	-- Check if this is a __main__.json file (properties)
 	elseif filePath:match("__main__%.json$") then
+		-- Suppress echo for this path AND sibling .lua path
+		if Deserializer.onBeforeApply then
+			Deserializer.onBeforeApply(filePath)
+			-- Also suppress the sibling __main__.lua (property changes on scripts
+			-- with children trigger Changed events that resend the source too)
+			local luaPath = filePath:gsub("__main__%.json$", "__main__.lua")
+			Deserializer.onBeforeApply(luaPath)
+		end
+
 		-- Parse JSON properties
 		local success, properties = pcall(function()
 			return HttpService:JSONDecode(content)

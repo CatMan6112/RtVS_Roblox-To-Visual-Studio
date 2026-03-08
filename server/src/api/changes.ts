@@ -5,22 +5,27 @@
 import { Request, Response } from "express";
 import { ChangesResponse, FileChangeWithContent } from "../types/api";
 import { FileSystemWatcher } from "../file-system/watcher";
+import { ChangeTracker } from "../change-tracker";
 import { pathConfig } from "../config/path-config";
 import fs from "fs/promises";
 import path from "path";
+import { logger } from "../utils/logger";
 
 let watcher: FileSystemWatcher | null = null;
+
+/** Shared ChangeTracker instance — used by watcher, studio-change, and sync endpoints */
+const changeTracker = new ChangeTracker();
 
 /**
  * Initialize the file watcher
  */
-export function initializeWatcher(watchPath: string): void {
+export function initializeWatcher(watchPath: string, ignorePaths: string[] = []): void {
   if (watcher) {
-    console.warn("File watcher already initialized");
+    logger.warn("File watcher already initialized");
     return;
   }
 
-  watcher = new FileSystemWatcher(watchPath);
+  watcher = new FileSystemWatcher(watchPath, changeTracker, ignorePaths);
   watcher.start();
 }
 
@@ -35,10 +40,17 @@ export async function stopWatcher(): Promise<void> {
 }
 
 /**
- * Get the watcher instance (for pausing during sync operations)
+ * Get the watcher instance
  */
 export function getWatcher(): FileSystemWatcher | null {
   return watcher;
+}
+
+/**
+ * Get the shared ChangeTracker instance
+ */
+export function getChangeTracker(): ChangeTracker {
+  return changeTracker;
 }
 
 /**
@@ -73,9 +85,9 @@ export async function handleChanges(_req: Request, res: Response): Promise<void>
           try {
             content = await fs.readFile(fullPath, "utf-8");
           } catch (error: any) {
-            console.warn(`Could not read file ${change.path}:`, error.message);
+            logger.warn(`Could not read file ${change.path}: ${error.message}`);
             // Log the attempted path for debugging
-            console.warn(`    Attempted path: ${fullPath}`);
+            logger.warn(`    Attempted path: ${fullPath}`);
           }
         }
 
@@ -91,12 +103,12 @@ export async function handleChanges(_req: Request, res: Response): Promise<void>
     };
 
     if (changesWithContent.length > 0) {
-      console.log(`Sending ${changesWithContent.length} changes to plugin`);
+      logger.info(`Sending ${changesWithContent.length} changes to plugin`);
     }
 
     res.json(response);
   } catch (error: any) {
-    console.error("Error getting changes:", error);
+    logger.error("Error getting changes:", error);
     res.status(500).json({
       error: error.message,
       changes: [],

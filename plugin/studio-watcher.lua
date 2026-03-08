@@ -6,6 +6,25 @@ local StudioWatcher = {}
 
 local SERVER_URL = "http://localhost:8080"
 
+-- Echo suppression: tracks paths we just applied from the file system
+-- so we don't re-send them back to the server when Studio fires Changed events.
+-- Uses time-based suppression (not content comparison) because Studio's
+-- JSONEncode produces different key ordering than the original file.
+local suppressedChanges = {} -- { [filePath] = expires_tick }
+
+-- Periodic cleanup of expired suppression entries
+task.spawn(function()
+	while true do
+		task.wait(10)
+		local now = tick()
+		for key, expiresAt in pairs(suppressedChanges) do
+			if now >= expiresAt then
+				suppressedChanges[key] = nil
+			end
+		end
+	end
+end)
+
 local function serializeVector3(vector)
 	return {
 		X = vector.X,
@@ -105,14 +124,44 @@ local function getInstanceProperties(instance)
 	return properties
 end
 
--- Get the file system name for an instance
--- Uses _rtvs_fsName attribute if set (for deduplicated names), otherwise uses instance Name
+-- Mirrors the server's sanitizeName() in server/src/file-system/path-generator.ts.
+-- Must be kept in sync with the TypeScript version.
+local RESERVED_NAMES = {
+	CON=true, PRN=true, AUX=true, NUL=true,
+	COM1=true, COM2=true, COM3=true, COM4=true, COM5=true,
+	COM6=true, COM7=true, COM8=true, COM9=true,
+	LPT1=true, LPT2=true, LPT3=true, LPT4=true, LPT5=true,
+	LPT6=true, LPT7=true, LPT8=true, LPT9=true,
+}
+local function sanitizeName(name)
+	-- Replace invalid file system characters with underscore
+	name = name:gsub('[<>:"/\\|?*%z]', "_")
+	-- Trim leading/trailing whitespace
+	name = name:match("^%s*(.-)%s*$") or name
+	-- Remove trailing periods and spaces (Windows strips these silently)
+	name = name:gsub("[.%s]+$", "")
+	-- Remove leading periods (hidden files on Unix)
+	name = name:gsub("^%.+", "")
+	-- Prefix Windows reserved names
+	if RESERVED_NAMES[name:upper()] then
+		name = "_" .. name
+	end
+	-- Ensure not empty
+	if #name == 0 then
+		name = "Unnamed"
+	end
+	return name
+end
+
+-- Get the file system name for an instance.
+-- Checks _rtvs_fsName attribute first (set by server for deduplicated/sanitized names),
+-- then falls back to sanitizing the instance Name to match server behaviour.
 local function getFileSystemName(instance)
 	local fsName = instance:GetAttribute("_rtvs_fsName")
 	if fsName then
 		return fsName
 	end
-	return instance.Name
+	return sanitizeName(instance.Name)
 end
 
 -- Get the file path for an instance
@@ -151,7 +200,9 @@ local function getInstanceFilePath(instance)
 			-- .module.lua = ModuleScript
 			local extension = ".lua" -- Default for Script
 			if instance.ClassName == "LocalScript" then
-				extension = ".client.lua"
+				-- Prefer the stored extension to preserve aliases (e.g. .local.lua)
+				local storedExt = instance:GetAttribute("_rtvs_fileExt")
+				extension = storedExt or ".client.lua"
 			elseif instance.ClassName == "ModuleScript" then
 				extension = ".module.lua"
 			end
@@ -186,10 +237,58 @@ local function sendFileChange(filePath, content, changeType)
 	end
 end
 
+-- Register an echo suppression entry. Called by the deserializer before
+-- applying a file-system-originated change to a Studio instance.
+-- Suppresses ALL outbound changes for this path for 3 seconds.
+function StudioWatcher.suppressEcho(filePath)
+	suppressedChanges[filePath] = tick() + 3
+	-- Also suppress the canonical alias (.local.lua ↔ .client.lua) so that
+	-- a DescendantAdded firing before _rtvs_fileExt is set is still suppressed.
+	if filePath:match("%.local%.lua$") then
+		suppressedChanges[filePath:gsub("%.local%.lua$", ".client.lua")] = tick() + 3
+	elseif filePath:match("%.client%.lua$") then
+		suppressedChanges[filePath:gsub("%.client%.lua$", ".local.lua")] = tick() + 3
+	end
+end
+
+-- Check if a change should be suppressed (it's an echo of a FS-originated change)
+local function isSuppressed(filePath)
+	local expiresAt = suppressedChanges[filePath]
+	if not expiresAt then
+		return false
+	end
+
+	if tick() >= expiresAt then
+		suppressedChanges[filePath] = nil
+		return false
+	end
+
+	return true
+end
+
+-- Track last-known file path per instance for rename detection.
+-- When handlePropertyChanged sees a different path than what's stored here,
+-- it knows the instance was renamed and sends a delete for the old path first.
+local instancePaths = {} -- { [instance] = filePath }
+
 -- Handle instance property changes
 local function handlePropertyChanged(instance)
 	local filePath = getInstanceFilePath(instance)
 	if not filePath then return end
+
+	-- Rename detection: if the instance's path has changed since we last tracked it,
+	-- send a delete for the old file(s) before writing the new ones.
+	local oldPath = instancePaths[instance]
+	if oldPath and oldPath ~= filePath then
+		sendFileChange(oldPath, "", "delete")
+		-- For scripts with children, the old path is __main__.lua — also delete old __main__.json
+		if instance:IsA("LuaSourceContainer") and #instance:GetChildren() > 0 then
+			local oldJsonPath = oldPath:gsub("__main__%.lua$", "__main__.json")
+			sendFileChange(oldJsonPath, "", "delete")
+		end
+		-- For non-script containers, oldPath IS the __main__.json; server cleanup removes the dir
+	end
+	instancePaths[instance] = filePath
 
 	-- For scripts, we need to check if it's a Source change
 	if instance:IsA("LuaSourceContainer") then
@@ -207,11 +306,16 @@ local function handlePropertyChanged(instance)
 			jsonPath = nil
 		end
 
+		-- Check echo suppression before sending
+		if isSuppressed(scriptPath) then
+			return
+		end
+
 		-- Send script source
 		sendFileChange(scriptPath, instance.Source, "update")
 
 		-- Send properties if needed (for scripts with children)
-		if jsonPath and #instance:GetChildren() > 0 then
+		if jsonPath and #instance:GetChildren() > 0 and not isSuppressed(jsonPath) then
 			local properties = {
 				ClassName = instance.ClassName,
 				Name = instance.Name,
@@ -221,6 +325,11 @@ local function handlePropertyChanged(instance)
 		end
 	else
 		-- Non-script object - update __main__.json
+		-- Check echo suppression before doing any work
+		if isSuppressed(filePath) then
+			return
+		end
+
 		local properties = {
 			ClassName = instance.ClassName,
 			Name = instance.Name,
@@ -234,6 +343,8 @@ end
 local function handleInstanceAdded(instance)
 	local filePath = getInstanceFilePath(instance)
 	if not filePath then return end
+
+	instancePaths[instance] = filePath
 
 	if instance:IsA("LuaSourceContainer") then
 		-- Send script source
@@ -262,8 +373,14 @@ end
 
 -- Handle instance removed
 local function handleInstanceRemoved(instance)
-	local filePath = getInstanceFilePath(instance)
-	if not filePath then return end
+	-- Prefer the stored path: the live parent chain may already be severed
+	-- when this fires (e.g. Studio Live Scripting kicks you on script delete).
+	local filePath = instancePaths[instance] or getInstanceFilePath(instance)
+	instancePaths[instance] = nil -- clean up tracked path
+	if not filePath then
+		warn("RtVS: Could not determine file path for deleted instance:", instance:GetFullName(), "- deletion will not sync")
+		return
+	end
 
 	sendFileChange(filePath, "", "delete")
 
@@ -277,41 +394,63 @@ end
 -- Connection tracking
 local connections = {}
 
--- Start watching a service
-local function watchService(service)
-	-- Watch for new children
-	connections[#connections + 1] = service.ChildAdded:Connect(function(child)
-		handleInstanceAdded(child)
-		watchDescendants(child)
-	end)
+-- Debounce: batch rapid property changes on the same instance into one update.
+-- When applyProperties sets 5 properties, each fires Changed. Without debouncing
+-- that's 5 HTTP POSTs; with debouncing it's 1 after a 200ms quiet period.
+local pendingPropertyChanges = {} -- { [instanceFullName] = { instance, scheduledTick } }
+local DEBOUNCE_DELAY = 0.2 -- 200ms
 
-	-- Watch for removed children
-	connections[#connections + 1] = service.ChildRemoved:Connect(function(child)
-		handleInstanceRemoved(child)
-	end)
-
-	-- Watch existing descendants
-	for _, descendant in ipairs(service:GetDescendants()) do
-		watchDescendants(descendant)
-	end
+local function schedulePropertyChange(instance)
+	pendingPropertyChanges[instance:GetFullName()] = {
+		instance = instance,
+		scheduledTick = tick() + DEBOUNCE_DELAY
+	}
 end
 
--- Watch a descendant and its future descendants
-function watchDescendants(instance)
-	-- Watch property changes
-	connections[#connections + 1] = instance.Changed:Connect(function(_property)
-		handlePropertyChanged(instance)
-	end)
+-- Background loop to flush debounced property changes
+task.spawn(function()
+	while true do
+		task.wait(0.05)
+		local now = tick()
+		for fullName, entry in pairs(pendingPropertyChanges) do
+			if now >= entry.scheduledTick then
+				pendingPropertyChanges[fullName] = nil
+				pcall(handlePropertyChanged, entry.instance)
+			end
+		end
+	end
+end)
 
-	-- Watch for new descendants
-	connections[#connections + 1] = instance.DescendantAdded:Connect(function(descendant)
+-- Start watching a service
+local function watchService(service)
+	-- Watch for new descendants (at any depth)
+	connections[#connections + 1] = service.DescendantAdded:Connect(function(descendant)
 		handleInstanceAdded(descendant)
 		watchDescendants(descendant)
 	end)
 
-	-- Watch for removed descendants
-	connections[#connections + 1] = instance.DescendantRemoving:Connect(function(descendant)
+	-- Watch for removed descendants (at any depth)
+	-- Uses DescendantRemoving (not ChildRemoved) because it fires BEFORE
+	-- the parent link is severed, so getInstanceFilePath can still walk the tree.
+	connections[#connections + 1] = service.DescendantRemoving:Connect(function(descendant)
 		handleInstanceRemoved(descendant)
+	end)
+
+	-- Watch existing descendants and seed their paths so deletion can find them
+	for _, descendant in ipairs(service:GetDescendants()) do
+		local filePath = getInstanceFilePath(descendant)
+		if filePath then
+			instancePaths[descendant] = filePath
+		end
+		watchDescendants(descendant)
+	end
+end
+
+-- Watch a descendant for property changes and new children
+function watchDescendants(instance)
+	-- Watch property changes (debounced to batch rapid changes)
+	connections[#connections + 1] = instance.Changed:Connect(function(_property)
+		schedulePropertyChange(instance)
 	end)
 end
 

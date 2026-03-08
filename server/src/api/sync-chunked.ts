@@ -1,22 +1,24 @@
 /**
  * Chunked sync endpoints for handling large games
- * Allows sending game data in multiple smaller requests
+ * Uses write-on-arrival: chunks are written to disk immediately as they arrive,
+ * keeping memory usage flat regardless of game size.
  */
 
 import { Request, Response } from "express";
 import { RobloxInstance } from "../types/roblox";
 import { SyncResponse } from "../types/api";
 import { FileSystemWriter } from "../file-system/writer";
+import { buildRootIndexFromMetadata, indexToJsonString } from "../file-system/index-builder";
 import { updateSyncStats } from "./health";
-import { getWatcher } from "./changes";
+import { getWatcher, getChangeTracker } from "./changes";
 import { pathConfig } from "../config/path-config";
+import { logger } from "../utils/logger";
 import {
   createSession,
   getSession,
-  addServiceToSession,
-  addWorkspaceChunk,
-  addDeepChunk,
-  assembleGameData,
+  addServiceMetadata,
+  addInstanceTreeMetadata,
+  getIndexData,
   deleteSession,
   getSessionProgress,
   initWriteProgress,
@@ -26,10 +28,6 @@ import {
 } from "../sync-session";
 
 // Types for chunked sync requests
-interface StartSyncRequest {
-  expectedServices?: number;
-}
-
 interface StartSyncResponse {
   success: boolean;
   sessionId?: string;
@@ -63,14 +61,32 @@ interface CompleteSyncRequest {
 /**
  * POST /sync/start - Initialize a chunked sync session
  */
-export async function handleSyncStart(req: Request, res: Response): Promise<void> {
+export async function handleSyncStart(_req: Request, res: Response): Promise<void> {
   try {
-    const body: StartSyncRequest = req.body;
-    const expectedServices = body.expectedServices || 13; // Default to all services
+    // Create writer and prepare output directory
+    const SYNCED_GAME_PATH = await pathConfig.getStoragePath();
+    const writer = new FileSystemWriter(SYNCED_GAME_PATH);
+    await writer.prepareOutputDirectory();
 
-    const session = createSession(expectedServices);
+    // Enter bulk write mode to suppress all watcher events during chunked sync
+    const changeTracker = getChangeTracker();
+    changeTracker.beginBulkWrite();
 
-    console.log(`Started chunked sync session: ${session.id}`);
+    const watcher = getWatcher();
+    if (watcher) {
+      watcher.clearQueue();
+    }
+
+    const session = createSession(writer, true, () => {
+      // Bulk write end callback (called on timeout cleanup)
+      changeTracker.endBulkWrite();
+    });
+
+    // Initialize write progress
+    initWriteProgress(session.id);
+    updateWriteProgress(session.id, { phase: "writing", filesWritten: 0, totalFiles: 0 });
+
+    logger.info(`Started chunked sync session: ${session.id}`);
 
     const response: StartSyncResponse = {
       success: true,
@@ -79,7 +95,7 @@ export async function handleSyncStart(req: Request, res: Response): Promise<void
 
     res.json(response);
   } catch (error: any) {
-    console.error("Error starting sync session:", error);
+    logger.error("Error starting sync session:", error);
     res.status(500).json({
       success: false,
       error: error.message || "Failed to start sync session",
@@ -88,7 +104,7 @@ export async function handleSyncStart(req: Request, res: Response): Promise<void
 }
 
 /**
- * POST /sync/chunk - Receive a chunk of game data
+ * POST /sync/chunk - Receive a chunk of game data and write it to disk immediately
  */
 export async function handleSyncChunk(req: Request, res: Response): Promise<void> {
   try {
@@ -126,17 +142,20 @@ export async function handleSyncChunk(req: Request, res: Response): Promise<void
         return;
       }
 
-      const added = addServiceToSession(body.sessionId, body.serviceName, body.serviceData);
-      if (!added) {
-        res.status(500).json({
-          success: false,
-          received: false,
-          error: "Failed to add service to session",
-        } as ChunkResponse);
-        return;
-      }
+      // Write service to disk immediately
+      await session.writer.writeServiceToDisk(body.serviceData);
 
-      console.log(`Received service chunk: ${body.serviceName} (session: ${body.sessionId.slice(0, 8)}...)`);
+      // Store only lightweight index metadata (name + className)
+      addServiceMetadata(body.sessionId, body.serviceName, body.serviceData);
+
+      // Update progress
+      updateWriteProgress(body.sessionId, {
+        phase: "writing",
+        filesWritten: session.writer.getFilesWritten(),
+        currentService: body.serviceName,
+      });
+
+      logger.info(`Received & wrote service: ${body.serviceName} (session: ${body.sessionId.slice(0, 8)}...)`);
     } else if (body.type === "workspace_chunk") {
       // Validate workspace chunk data
       if (body.chunkIndex === undefined || body.totalChunks === undefined || !body.children) {
@@ -148,25 +167,24 @@ export async function handleSyncChunk(req: Request, res: Response): Promise<void
         return;
       }
 
-      const added = addWorkspaceChunk(
-        body.sessionId,
-        body.chunkIndex,
-        body.totalChunks,
-        body.children
-      );
-      if (!added) {
-        res.status(500).json({
-          success: false,
-          received: false,
-          error: "Failed to add workspace chunk to session",
-        } as ChunkResponse);
-        return;
+      // Write each child to disk immediately
+      for (const child of body.children) {
+        await session.writer.writeDeepChunkToDisk("Workspace", child);
+        addInstanceTreeMetadata(body.sessionId, "Workspace", child);
       }
 
-      console.log(
-        `Received Workspace chunk ${body.chunkIndex + 1}/${body.totalChunks} ` +
-        `(${body.children.length} children, session: ${body.sessionId.slice(0, 8)}...)`
-      );
+      // Update progress
+      updateWriteProgress(body.sessionId, {
+        phase: "writing",
+        filesWritten: session.writer.getFilesWritten(),
+      });
+
+      if ((body.chunkIndex + 1) % 100 === 0 || body.chunkIndex + 1 === body.totalChunks) {
+        logger.info(
+          `Received & wrote Workspace chunk ${body.chunkIndex + 1}/${body.totalChunks} ` +
+          `(session: ${body.sessionId.slice(0, 8)}...)`
+        );
+      }
     } else if (body.type === "deep_chunk") {
       // Validate deep chunk data
       if (!body.parentPath || !body.instanceData) {
@@ -178,21 +196,24 @@ export async function handleSyncChunk(req: Request, res: Response): Promise<void
         return;
       }
 
-      const added = addDeepChunk(body.sessionId, body.parentPath, body.instanceData);
-      if (!added) {
-        res.status(500).json({
-          success: false,
-          received: false,
-          error: "Failed to add deep chunk to session",
-        } as ChunkResponse);
-        return;
-      }
+      // Write chunk to disk immediately at the specified path
+      await session.writer.writeDeepChunkToDisk(body.parentPath, body.instanceData);
 
-      // Only log occasionally to avoid spam (every 100 chunks)
-      const session = getSession(body.sessionId);
-      if (session && session.deepChunks.length % 100 === 0) {
-        console.log(
-          `Received ${session.deepChunks.length} deep chunks (session: ${body.sessionId.slice(0, 8)}...)`
+      // Store only lightweight index metadata
+      addInstanceTreeMetadata(body.sessionId, body.parentPath, body.instanceData);
+
+      // Update progress and yield to GC periodically
+      const chunkCount = session.deepChunkCount;
+      if (chunkCount % 50 === 0) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      if (chunkCount % 100 === 0) {
+        updateWriteProgress(body.sessionId, {
+          phase: "writing",
+          filesWritten: session.writer.getFilesWritten(),
+        });
+        logger.info(
+          `Wrote ${chunkCount} deep chunks (session: ${body.sessionId.slice(0, 8)}...)`
         );
       }
     } else {
@@ -212,7 +233,7 @@ export async function handleSyncChunk(req: Request, res: Response): Promise<void
 
     res.json(response);
   } catch (error: any) {
-    console.error("Error handling sync chunk:", error);
+    logger.error("Error handling sync chunk:", error);
     res.status(500).json({
       success: false,
       received: false,
@@ -222,9 +243,8 @@ export async function handleSyncChunk(req: Request, res: Response): Promise<void
 }
 
 /**
- * POST /sync/complete - Finalize chunked sync and write to filesystem
- * IMPORTANT: This endpoint responds immediately and writes files in the background.
- * The client should poll /sync/status/:sessionId for progress.
+ * POST /sync/complete - Finalize chunked sync: write index.json and clean up
+ * Most files are already on disk from write-on-arrival in handleSyncChunk.
  */
 export async function handleSyncComplete(req: Request, res: Response): Promise<void> {
   try {
@@ -248,61 +268,31 @@ export async function handleSyncComplete(req: Request, res: Response): Promise<v
       return;
     }
 
-    console.log(`Completing chunked sync session: ${body.sessionId.slice(0, 8)}...`);
-    console.log(`Final progress: ${getSessionProgress(body.sessionId)}`);
+    logger.info(`Completing chunked sync session: ${body.sessionId.slice(0, 8)}...`);
+    logger.info(`Final progress: ${getSessionProgress(body.sessionId)}`);
 
-    // Initialize write progress tracking
-    initWriteProgress(body.sessionId);
-
-    // Assemble complete GameData from chunks
-    const gameData = assembleGameData(body.sessionId);
-    if (!gameData) {
-      updateWriteProgress(body.sessionId, { phase: "error", error: "Failed to assemble game data" });
-      res.status(500).json({
-        success: false,
-        error: "Failed to assemble game data from chunks",
-      } as SyncResponse);
-      return;
-    }
-
-    console.log(`Assembled GameData with ${gameData.Services.length} services`);
-
-    // Respond immediately - file writing happens in the background
-    // The client should poll /sync/status/:sessionId for progress
+    // Respond immediately for backward compatibility with plugin status polling
     res.json({
       success: true,
       started: true,
-      message: "File writing started. Poll /sync/status/:sessionId for progress.",
+      message: "Finalizing sync. Poll /sync/status/:sessionId for progress.",
       timestamp: new Date().toISOString(),
     } as SyncResponse & { started: boolean; message: string });
 
-    // Delete session immediately to free memory - gameData now owns the data
-    deleteSession(body.sessionId);
-
-    // Write files in the background (after response is sent)
+    // Finalize in background (write index.json, flush, cleanup)
     setImmediate(async () => {
-      // Pause file watcher to avoid detecting our own writes
-      const watcher = getWatcher();
-      if (watcher) {
-        watcher.pause();
-        watcher.clearQueue();
-      }
-
-      let filesWritten = 0;
-
       try {
-        // Write to file system with progress tracking
-        const SYNCED_GAME_PATH = await pathConfig.getStoragePath();
-        const writer = new FileSystemWriter(SYNCED_GAME_PATH);
+        // Build and write index.json from lightweight metadata
+        const indexData = getIndexData(body.sessionId);
+        if (indexData) {
+          const index = buildRootIndexFromMetadata(indexData);
+          await session.writer.writeIndexFile(indexToJsonString(index));
+        }
 
-        filesWritten = await writer.writeGameData(gameData, (progress) => {
-          updateWriteProgress(body.sessionId, {
-            phase: progress.phase,
-            filesWritten: progress.filesWritten,
-            totalFiles: progress.totalFiles,
-            currentService: progress.currentService,
-          });
-        });
+        // Flush any remaining pending writes
+        await session.writer.flushWrites();
+
+        const filesWritten = session.writer.getFilesWritten();
 
         // Update stats
         updateSyncStats(filesWritten);
@@ -313,33 +303,42 @@ export async function handleSyncComplete(req: Request, res: Response): Promise<v
           filesWritten,
         });
 
-        console.log(`Chunked sync complete: ${filesWritten} files written to ${SYNCED_GAME_PATH}`);
+        logger.info(`Chunked sync complete: ${filesWritten} files written`);
 
         // Wait a bit for all file writes to settle
         await new Promise((resolve) => setTimeout(resolve, 500));
       } catch (writeError: any) {
-        console.error("Error writing files:", writeError);
+        logger.error("Error finalizing sync:", writeError);
         updateWriteProgress(body.sessionId, {
           phase: "error",
-          error: writeError.message || "Write failed",
+          error: writeError.message || "Finalization failed",
         });
       } finally {
-        // Resume file watcher
-        if (watcher) {
-          watcher.resume();
+        // Exit bulk write mode
+        const changeTracker = getChangeTracker();
+        if (session.watcherPaused) {
+          changeTracker.endBulkWrite();
         }
+
+        // Delete session to free remaining metadata memory
+        deleteSession(body.sessionId);
 
         // Keep progress available for a bit longer so client can poll final status
         setTimeout(() => {
           clearWriteProgress(body.sessionId);
-        }, 60000); // Keep progress for 1 minute after completion
+        }, 60000);
       }
     });
   } catch (error: any) {
-    console.error("Error completing sync:", error);
+    logger.error("Error completing sync:", error);
 
     // Try to clean up session on error
     if (req.body.sessionId) {
+      const session = getSession(req.body.sessionId);
+      if (session && session.watcherPaused) {
+        const changeTracker = getChangeTracker();
+        changeTracker.endBulkWrite();
+      }
       deleteSession(req.body.sessionId);
       updateWriteProgress(req.body.sessionId, {
         phase: "error",
@@ -384,7 +383,7 @@ export async function handleSyncStatus(req: Request, res: Response): Promise<voi
       ...progress,
     });
   } catch (error: any) {
-    console.error("Error getting sync status:", error);
+    logger.error("Error getting sync status:", error);
     res.status(500).json({
       success: false,
       error: error.message || "Failed to get sync status",

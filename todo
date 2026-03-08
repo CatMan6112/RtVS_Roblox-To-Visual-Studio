@@ -1,0 +1,20 @@
+to do bug fixes:
+
+when creating a client script (localscript.client.lua), we encounter:
+
+  11:40:57.451  Received 1 changes from server  -  Edit
+  11:40:57.452  Applying create for StarterPlayer/StarterPlayerScripts/localscript.local.lua  -  Edit
+  11:40:57.452  Created LocalScript at StarterPlayer.StarterPlayerScripts.localscript  -  Edit
+  11:40:57.468  Sent create to server: StarterPlayer/StarterPlayerScripts/localscript.client.lua  -  Edit
+  11:40:57.567  Updated script: StarterPlayer.StarterPlayerScripts.localscript  -  Edit
+  11:40:57.567  Applied all changes (Ctrl+Z to undo)  -  Edit
+
+  File system behavior:
+  The created file is duplicated.
+
+  Studio behavior:
+  Meanwhile, only one script is created.
+
+  After editing one of these duplicated scripts, the other is deleted.
+  its not clear what effect this could have if it were edited over studio.
+

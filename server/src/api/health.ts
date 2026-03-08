@@ -47,3 +47,11 @@ export function updateSyncStats(filesWritten: number): void {
   lastSyncTime = new Date().toISOString();
   totalFilesWritten = filesWritten;
 }
+
+/**
+ * Reset sync statistics to initial state (used in tests)
+ */
+export function resetSyncStats(): void {
+  lastSyncTime = null;
+  totalFilesWritten = 0;
+}
