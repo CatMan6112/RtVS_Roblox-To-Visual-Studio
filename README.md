@@ -4,13 +4,13 @@
 
 Contrary to popular belief, this works with any code editor.
 
-**Version: 0.1.3 (Public Beta)**
+**Version: 0.1.4 (Public Beta)**
 
 A bidirectional synchronization system that connects Roblox Studio to your file system, enabling version control and external editing of Roblox game content.
 
 ## Features
 
-- Bidirectional sync between Roblox Studio and file system
+- Bidirectional sync between Roblox Studio and file system (now both in real time!)
 - Edit scripts in external editors (VS Code, Sublime, etc.)
 - Real-time file watching and automatic updates
 - Priority modes to control sync direction
@@ -71,6 +71,7 @@ See `plugin/README.md` for detailed usage information and workflows.
 - Node.js 18+
 - Roblox Studio
 - Windows or macOS
+- Now Supports Linux!
 
 ## License
 
