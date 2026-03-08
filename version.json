@@ -1,7 +1,19 @@
 {
-  "version": "0.1.3",
-  "releaseDate": "2026-01-20",
+  "version": "0.1.4",
+  "releaseDate": "2026-03-07",
   "changelog": {
+    "0.1.4": [
+      "Added commit mode: apply file system changes to Studio on reconnect",
+      "Added bidirectional real-time sync between Studio and file system",
+      "Added structured logging with logger utility",
+      "Added integration and unit test suite (Jest + supertest)",
+      "Refactored app setup into app.ts, improved server startup",
+      "Echo suppression via FNV-1a content hashing in change-tracker.ts"
+    ],
+    "0.1.3": [
+      "Added chunking for large projects (800KB chunks via /sync/start, /sync/chunk, /sync/complete)",
+      "Added index.json hierarchy map for chunked syncs"
+    ],
     "0.1.2": [
       "Added version compatibility check between plugin and server",
       "Plugin functionality suspended on version mismatch",
