@@ -5,6 +5,8 @@ local ChangeHistoryService = game:GetService("ChangeHistoryService")
 
 local Deserializer = require(script.Parent.deserializer)
 local StudioWatcher = require(script.Parent["studio-watcher"])
+local PathUtils = require(script.Parent["path-utils"])
+local Hash = require(script.Parent.hash)
 
 -- Wire up echo suppression: before the deserializer applies a change from the
 -- file system, register it with StudioWatcher so the resulting Changed event
@@ -1202,6 +1204,221 @@ local function performFullSync()
 	end
 end
 
+-- Smart Sync: only sync what changed since last full sync
+local function performSmartSync()
+	if versionMismatch then
+		warn("Cannot perform Smart Sync: Version mismatch detected")
+		return
+	end
+
+	print("===== RtVS: Smart Sync =====")
+	print("Checking for changes since last sync...")
+
+	-- Step 1: Fetch manifest from server
+	local manifestSuccess, manifestResponse = pcall(function()
+		return HttpService:GetAsync(SERVER_URL .. "/manifest")
+	end)
+
+	if not manifestSuccess then
+		warn("RtVS: Could not reach server:", manifestResponse)
+		return
+	end
+
+	local manifestData = HttpService:JSONDecode(manifestResponse)
+
+	if not manifestData or not manifestData.exists then
+		local reason = manifestData and manifestData.reason or "no manifest"
+		print("No sync manifest found (" .. reason .. "). Falling back to Full Sync...")
+		readAllServices()
+		return
+	end
+
+	-- Step 2: Quick-hash traversal of all services
+	print("Scanning game for changes...")
+	local scanStartTime = tick()
+
+	local servicesToRead = {
+		game.Workspace,
+		game:GetService("ReplicatedStorage"),
+		game:GetService("ReplicatedFirst"),
+		game:GetService("ServerScriptService"),
+		game:GetService("ServerStorage"),
+		game:GetService("StarterGui"),
+		game:GetService("StarterPack"),
+		game:GetService("StarterPlayer"),
+		game:GetService("Lighting"),
+		game:GetService("SoundService"),
+		game:GetService("Chat"),
+		game:GetService("LocalizationService"),
+		game:GetService("TestService"),
+	}
+
+	local hashMap = {} -- { [relativePath] = { hash = "...", fingerprint = "..." } }
+	local instanceLookup = {} -- { [relativePath] = instance }
+	local instanceCount = 0
+	local scanCount = 0
+
+	for _, service in ipairs(servicesToRead) do
+		-- Traverse all descendants of this service
+		local descendants = service:GetDescendants()
+
+		for _, instance in ipairs(descendants) do
+			scanCount = scanCount + 1
+
+			-- Yield every 100 instances to prevent Studio freeze
+			if scanCount % 100 == 0 then
+				task.wait()
+			end
+
+			-- Build file path for this instance
+			local filePath = PathUtils.getInstanceFilePath(instance)
+			if not filePath then
+				continue
+			end
+
+			-- Compute hash based on type
+			if instance:IsA("LuaSourceContainer") then
+				local hash = Hash.hashScript(instance)
+				hashMap[filePath] = { hash = hash }
+				instanceLookup[filePath] = instance
+
+				-- If script has children, also add the __main__.json entry
+				if #instance:GetChildren() > 0 then
+					local jsonPath = filePath:gsub("__main__%.lua$", "__main__.json")
+					local fingerprint = Hash.fingerprint(instance)
+					hashMap[jsonPath] = { fingerprint = fingerprint }
+					instanceLookup[jsonPath] = instance
+				end
+			else
+				local fingerprint = Hash.fingerprint(instance)
+				hashMap[filePath] = { fingerprint = fingerprint }
+				instanceLookup[filePath] = instance
+			end
+
+			instanceCount = instanceCount + 1
+		end
+	end
+
+	local scanTime = tick() - scanStartTime
+	print(string.format("Scanned %d instances in %.1f seconds", instanceCount, scanTime))
+
+	-- Step 3: Send hash map to server for delta plan
+	print("Computing delta...")
+	local planSuccess, planResponse = pcall(function()
+		throttleRequest()
+		return HttpService:PostAsync(
+			SERVER_URL .. "/delta-sync/plan",
+			HttpService:JSONEncode({
+				hashes = hashMap,
+				pluginVersion = PLUGIN_VERSION
+			}),
+			Enum.HttpContentType.ApplicationJson
+		)
+	end)
+
+	if not planSuccess then
+		warn("RtVS: Delta plan request failed:", planResponse)
+		warn("Falling back to Full Sync...")
+		readAllServices()
+		return
+	end
+
+	local planData = HttpService:JSONDecode(planResponse)
+
+	if not planData or not planData.success then
+		local reason = planData and planData.reason or "unknown"
+		print("Delta plan failed (" .. reason .. "). Falling back to Full Sync...")
+		readAllServices()
+		return
+	end
+
+	local delta = planData.delta
+	local changedCount = #delta.changed
+	local addedCount = #delta.added
+	local deletedCount = #delta.deleted
+	local unchangedCount = #delta.unchanged
+
+	print(string.format(
+		"Delta: %d changed, %d added, %d deleted, %d unchanged",
+		changedCount, addedCount, deletedCount, unchangedCount
+	))
+
+	-- Step 4: Check if full sync is recommended
+	if delta.suggestFullSync then
+		print("Large delta detected (>50% changed). Performing Full Sync instead...")
+		readAllServices()
+		return
+	end
+
+	-- Step 5: If nothing changed, we're done!
+	if changedCount == 0 and addedCount == 0 and deletedCount == 0 then
+		print("Everything is up to date! No sync needed.")
+		return
+	end
+
+	-- Step 6: Serialize only changed/added instances
+	print("Syncing changes...")
+	local syncStartTime = tick()
+
+	local instances = {}
+	local pathsToSync = {}
+
+	-- Combine changed and added paths
+	for _, p in ipairs(delta.changed) do
+		table.insert(pathsToSync, p)
+	end
+	for _, p in ipairs(delta.added) do
+		table.insert(pathsToSync, p)
+	end
+
+	for _, syncPath in ipairs(pathsToSync) do
+		local instance = instanceLookup[syncPath]
+		if instance then
+			-- Full serialize this instance (with properties, without children)
+			local instanceData = serializeInstance(instance, true) -- skipChildren = true
+			table.insert(instances, {
+				path = syncPath,
+				data = instanceData
+			})
+		end
+	end
+
+	-- Step 7: Send delta to server
+	local applySuccess, applyResponse = pcall(function()
+		throttleRequest()
+		return HttpService:PostAsync(
+			SERVER_URL .. "/delta-sync/apply",
+			HttpService:JSONEncode({
+				instances = instances,
+				deleted = delta.deleted
+			}),
+			Enum.HttpContentType.ApplicationJson
+		)
+	end)
+
+	if not applySuccess then
+		warn("RtVS: Delta apply failed:", applyResponse)
+		return
+	end
+
+	local applyData = HttpService:JSONDecode(applyResponse)
+	local syncTime = tick() - syncStartTime
+
+	if applyData and applyData.success then
+		print(string.format(
+			"===== Smart Sync complete in %.1fs! =====",
+			scanTime + syncTime
+		))
+		print(string.format(
+			"  %d files written, %d files deleted",
+			applyData.filesWritten or 0,
+			applyData.filesDeleted or 0
+		))
+	else
+		warn("RtVS: Delta apply returned error:", applyData and applyData.error or "unknown")
+	end
+end
+
 -- Create toolbar and buttons
 local toolbar = plugin:CreateToolbar("RtVS Sync")
 
@@ -1220,6 +1437,12 @@ local prioritizeServerButton = toolbar:CreateButton(
 local bidirectionalButton = toolbar:CreateButton(
 	"Bidirectional",
 	"Two-way sync: changes in Studio AND files sync simultaneously",
+	"rbxassetid://4458901886"
+)
+
+local smartSyncButton = toolbar:CreateButton(
+	"Smart Sync",
+	"Only sync what changed since last full sync (fast!)",
 	"rbxassetid://4458901886"
 )
 
@@ -1276,6 +1499,10 @@ bidirectionalButton.Click:Connect(function()
 		prioritizeStudioButton:SetActive(false)
 		prioritizeServerButton:SetActive(false)
 	end
+end)
+
+smartSyncButton.Click:Connect(function()
+	performSmartSync()
 end)
 
 fullSyncButton.Click:Connect(function()

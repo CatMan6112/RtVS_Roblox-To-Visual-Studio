@@ -1,6 +1,7 @@
 -- RtVS Plugin: Studio Watcher
 local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local PathUtils = require(script.Parent["path-utils"])
 
 local StudioWatcher = {}
 
@@ -124,95 +125,10 @@ local function getInstanceProperties(instance)
 	return properties
 end
 
--- Mirrors the server's sanitizeName() in server/src/file-system/path-generator.ts.
--- Must be kept in sync with the TypeScript version.
-local RESERVED_NAMES = {
-	CON=true, PRN=true, AUX=true, NUL=true,
-	COM1=true, COM2=true, COM3=true, COM4=true, COM5=true,
-	COM6=true, COM7=true, COM8=true, COM9=true,
-	LPT1=true, LPT2=true, LPT3=true, LPT4=true, LPT5=true,
-	LPT6=true, LPT7=true, LPT8=true, LPT9=true,
-}
-local function sanitizeName(name)
-	-- Replace invalid file system characters with underscore
-	name = name:gsub('[<>:"/\\|?*%z]', "_")
-	-- Trim leading/trailing whitespace
-	name = name:match("^%s*(.-)%s*$") or name
-	-- Remove trailing periods and spaces (Windows strips these silently)
-	name = name:gsub("[.%s]+$", "")
-	-- Remove leading periods (hidden files on Unix)
-	name = name:gsub("^%.+", "")
-	-- Prefix Windows reserved names
-	if RESERVED_NAMES[name:upper()] then
-		name = "_" .. name
-	end
-	-- Ensure not empty
-	if #name == 0 then
-		name = "Unnamed"
-	end
-	return name
-end
-
--- Get the file system name for an instance.
--- Checks _rtvs_fsName attribute first (set by server for deduplicated/sanitized names),
--- then falls back to sanitizing the instance Name to match server behaviour.
-local function getFileSystemName(instance)
-	local fsName = instance:GetAttribute("_rtvs_fsName")
-	if fsName then
-		return fsName
-	end
-	return sanitizeName(instance.Name)
-end
-
--- Get the file path for an instance
-local function getInstanceFilePath(instance)
-	local pathParts = {}
-	local current = instance
-
-	-- Build path from instance to root service
-	-- Use file system names (which may differ from instance names for duplicates)
-	while current and current.Parent ~= game do
-		table.insert(pathParts, 1, getFileSystemName(current))
-		current = current.Parent
-	end
-
-	-- Add service name
-	if current then
-		table.insert(pathParts, 1, current.Name)
-	else
-		return nil
-	end
-
-	-- Determine file extension and path
-	local basePath = table.concat(pathParts, "/")
-
-	-- Check if instance is a script
-	if instance:IsA("LuaSourceContainer") then
-		-- Check if it has children
-		if #instance:GetChildren() > 0 then
-			-- Script with children -> folder with __main__.lua
-			return basePath .. "/__main__.lua"
-		else
-			-- Script without children -> standalone file with appropriate extension
-			-- Determine extension based on ClassName
-			-- .lua = Script
-			-- .client.lua = LocalScript (note: .local.lua is also supported as an alias)
-			-- .module.lua = ModuleScript
-			local extension = ".lua" -- Default for Script
-			if instance.ClassName == "LocalScript" then
-				-- Prefer the stored extension to preserve aliases (e.g. .local.lua)
-				local storedExt = instance:GetAttribute("_rtvs_fileExt")
-				extension = storedExt or ".client.lua"
-			elseif instance.ClassName == "ModuleScript" then
-				extension = ".module.lua"
-			end
-			return basePath .. extension
-		end
-	else
-		-- Non-script object -> folder with __main__.json
-		return basePath .. "/__main__.json"
-	end
-end
+-- Path utilities (shared with main.lua for smart sync)
+local sanitizeName = PathUtils.sanitizeName
+local getFileSystemName = PathUtils.getFileSystemName
+local getInstanceFilePath = PathUtils.getInstanceFilePath
 
 -- Send file change to server
 local function sendFileChange(filePath, content, changeType)

@@ -6,6 +6,7 @@ import { Request, Response } from "express";
 import { GameData } from "../types/roblox";
 import { SyncResponse } from "../types/api";
 import { FileSystemWriter } from "../file-system/writer";
+import { generateManifest, saveManifest } from "../file-system/manifest";
 import { updateSyncStats } from "./health";
 import { getWatcher, getChangeTracker } from "./changes";
 import { pathConfig } from "../config/path-config";
@@ -54,6 +55,14 @@ export async function handleSync(req: Request, res: Response): Promise<void> {
       const SYNCED_GAME_PATH = await pathConfig.getStoragePath();
       const writer = new FileSystemWriter(SYNCED_GAME_PATH);
       filesWritten = await writer.writeGameData(gameData);
+
+      // Generate sync manifest for future delta syncs
+      try {
+        const manifest = await generateManifest(SYNCED_GAME_PATH, "0.1.4");
+        await saveManifest(SYNCED_GAME_PATH, manifest);
+      } catch (manifestError: any) {
+        logger.warn("Failed to generate sync manifest:", manifestError.message);
+      }
 
       // Update stats
       updateSyncStats(filesWritten);

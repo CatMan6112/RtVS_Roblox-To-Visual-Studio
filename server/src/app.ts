@@ -10,6 +10,7 @@ import { handleSyncStart, handleSyncChunk, handleSyncComplete, handleSyncStatus 
 import { handleChanges } from "./api/changes";
 import { handleStudioChange } from "./api/studio-change";
 import { handleGetCommits, handleCommitsApplied } from "./api/commits";
+import { handleGetManifest, handleDeltaPlan, handleDeltaApply } from "./api/delta-sync";
 import { logger } from "./utils/logger";
 
 export const app = express();
@@ -37,6 +38,9 @@ app.get("/changes", handleChanges);
 app.post("/studio-change", handleStudioChange);
 app.get("/commits", handleGetCommits);
 app.post("/commits/applied", handleCommitsApplied);
+app.get("/manifest", handleGetManifest);
+app.post("/delta-sync/plan", handleDeltaPlan);
+app.post("/delta-sync/apply", handleDeltaApply);
 
 // 404 handler
 app.use((req, res) => {
