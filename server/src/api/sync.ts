@@ -61,7 +61,7 @@ export async function handleSync(req: Request, res: Response): Promise<void> {
         const manifest = await generateManifest(SYNCED_GAME_PATH, "0.1.4");
         await saveManifest(SYNCED_GAME_PATH, manifest);
       } catch (manifestError: any) {
-        logger.warn("Failed to generate sync manifest:", manifestError.message);
+        logger.warn(`Failed to generate sync manifest: ${manifestError.message}`);
       }
 
       // Update stats
