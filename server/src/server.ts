@@ -14,7 +14,7 @@ import { verifyBases } from "./commit-mode/startup-verifier";
 // Configuration
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = "localhost"; // MUST be "localhost" not "127.0.0.1" for Roblox Studio
-const VERSION = "0.1.4"; // Server version
+const VERSION = "0.1.5"; // Server version
 
 // Start server with async initialization
 (async () => {

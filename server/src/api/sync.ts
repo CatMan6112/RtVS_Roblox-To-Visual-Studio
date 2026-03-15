@@ -58,7 +58,7 @@ export async function handleSync(req: Request, res: Response): Promise<void> {
 
       // Generate sync manifest for future delta syncs
       try {
-        const manifest = await generateManifest(SYNCED_GAME_PATH, "0.1.4");
+        const manifest = await generateManifest(SYNCED_GAME_PATH, "0.1.5");
         await saveManifest(SYNCED_GAME_PATH, manifest);
       } catch (manifestError: any) {
         logger.warn(`Failed to generate sync manifest: ${manifestError.message}`);

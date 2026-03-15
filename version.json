@@ -1,8 +1,8 @@
 {
-  "version": "0.1.4",
-  "releaseDate": "2026-03-07",
+  "version": "0.1.5",
+  "releaseDate": "2026-03-15",
   "changelog": {
-    "0.1.4": [
+    "0.1.5": [
       "Added commit mode: apply file system changes to Studio on reconnect",
       "Added bidirectional real-time sync between Studio and file system",
       "Added structured logging with logger utility",

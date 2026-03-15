@@ -1,6 +1,6 @@
 {
   "name": "rtvs-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Local server for syncing Roblox Studio instances to file system",
   "main": "dist/server.js",
   "scripts": {

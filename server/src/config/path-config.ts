@@ -59,38 +59,50 @@ export class PathConfig {
   }
 
   async promptForPath(): Promise<string> {
-    console.log("\nConfigure Storage Path");
-    console.log("─".repeat(50));
-    console.log("Where would you like to store synced game files?");
-
     const { lastUsedPath, ignorePaths, commitMode } = await this.loadConfig();
     this.ignorePaths = ignorePaths;
     this.commitMode = commitMode;
     const defaultPath = lastUsedPath || path.join(process.cwd(), "..", "synced-game");
 
-    if (lastUsedPath) {
-      console.log(`(Press Enter for last used: ${lastUsedPath})`);
-    } else {
-      console.log(`(Press Enter for default: ${defaultPath})`);
+    while (true) {
+      console.log("\nConfigure Storage Path");
+      console.log("─".repeat(50));
+      console.log("Where would you like to store synced game files?");
+
+      if (lastUsedPath) {
+        console.log(`(Press Enter for last used: ${lastUsedPath})`);
+      } else {
+        console.log(`(Press Enter for default: ${defaultPath})`);
+      }
+      console.log("");
+
+      const userInput = readlineSync.question("Storage path: ", {
+        defaultInput: defaultPath,
+      });
+
+      let resolvedPath = path.resolve(userInput.trim());
+      if (!path.isAbsolute(userInput)) {
+        resolvedPath = path.resolve(process.cwd(), userInput);
+      }
+
+      try {
+        await fs.access(resolvedPath);
+      } catch {
+        console.log(`\nError: Path does not exist: ${resolvedPath}`);
+        console.log("RtVS will not create the directory — please create it first.");
+        readlineSync.question("\nPress Enter to try again...", {});
+        console.clear();
+        continue;
+      }
+
+      this.storagePath = resolvedPath;
+      await this.saveConfig(this.storagePath, this.ignorePaths);
+
+      console.log(`Storage path set to: ${this.storagePath}\n`);
+      console.log("─".repeat(50));
+
+      return this.storagePath;
     }
-    console.log("");
-
-    const userInput = readlineSync.question("Storage path: ", {
-      defaultInput: defaultPath,
-    });
-
-    let resolvedPath = path.resolve(userInput.trim());
-    if (!path.isAbsolute(userInput)) {
-      resolvedPath = path.resolve(process.cwd(), userInput);
-    }
-
-    this.storagePath = resolvedPath;
-    await this.saveConfig(this.storagePath, this.ignorePaths);
-
-    console.log(`Storage path set to: ${this.storagePath}\n`);
-    console.log("─".repeat(50));
-
-    return this.storagePath;
   }
 
   async getStoragePath(): Promise<string> {
@@ -121,8 +133,7 @@ export class PathConfig {
       await fs.access(this.storagePath);
     } catch (error: any) {
       if (error.code === "ENOENT") {
-        logger.info(`Creating storage directory: ${this.storagePath}`);
-        await fs.mkdir(this.storagePath, { recursive: true });
+        throw new Error(`Storage directory does not exist: ${this.storagePath}`);
       } else {
         throw error;
       }

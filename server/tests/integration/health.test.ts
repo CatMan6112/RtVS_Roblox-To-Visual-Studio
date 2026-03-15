@@ -20,7 +20,7 @@ describe("GET /ping", () => {
 
   it("includes the server version", async () => {
     const res = await request(app).get("/ping");
-    expect(res.body.version).toBe("0.1.4");
+    expect(res.body.version).toBe("0.1.5");
   });
 
   it("responds with JSON content-type", async () => {
@@ -51,7 +51,7 @@ describe("GET /status", () => {
 
   it("includes the server version", async () => {
     const res = await request(app).get("/status");
-    expect(res.body.version).toBe("0.1.4");
+    expect(res.body.version).toBe("0.1.5");
   });
 });
 
