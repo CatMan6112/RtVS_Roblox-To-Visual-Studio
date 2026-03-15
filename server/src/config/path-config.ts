@@ -1,14 +1,15 @@
-/**
- * Path configuration module - prompts user for storage path and manages it
- */
-
 import readlineSync from "readline-sync";
 import path from "path";
 import fs from "fs/promises";
 import os from "os";
 import { logger } from "../utils/logger";
 
-const DEFAULT_IGNORE_PATHS = ["ServerStorage/MoonAnimator2Saves", ".rtvs"];
+const DEFAULT_IGNORE_PATHS = [
+  "ServerStorage/MoonAnimator2Saves",
+  ".rtvs",
+  "**/AnimSaves/**",
+  "**/AnimSave/**",
+];
 
 export class PathConfig {
   private storagePath: string = "";
@@ -17,32 +18,21 @@ export class PathConfig {
   private configFilePath: string;
 
   constructor() {
-    // Determine config file location based on OS
     const configDir = this.getConfigDirectory();
     this.configFilePath = path.join(configDir, "rtvs-config.json");
   }
 
-  /**
-   * Get the appropriate config directory for the current OS
-   */
   private getConfigDirectory(): string {
     const platform = os.platform();
-
     if (platform === "win32") {
-      // Windows: Use %APPDATA%\RtVS
       return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "RtVS");
     } else if (platform === "darwin") {
-      // macOS: Use ~/Library/Application Support/RtVS
       return path.join(os.homedir(), "Library", "Application Support", "RtVS");
     } else {
-      // Linux: Use ~/.config/rtvs
       return path.join(os.homedir(), ".config", "rtvs");
     }
   }
 
-  /**
-   * Load the last used path from config file
-   */
   private async loadConfig(): Promise<{ lastUsedPath: string | null; ignorePaths: string[]; commitMode: boolean }> {
     try {
       const configData = await fs.readFile(this.configFilePath, "utf-8");
@@ -53,7 +43,6 @@ export class PathConfig {
         commitMode: config.commitMode === true,
       };
     } catch {
-      // Config file doesn't exist or is invalid - that's okay
       return { lastUsedPath: null, ignorePaths: DEFAULT_IGNORE_PATHS, commitMode: false };
     }
   }
@@ -69,15 +58,11 @@ export class PathConfig {
     }
   }
 
-  /**
-   * Prompt the user for the storage path
-   */
   async promptForPath(): Promise<string> {
     console.log("\nConfigure Storage Path");
     console.log("─".repeat(50));
     console.log("Where would you like to store synced game files?");
 
-    // Try to load the last used path
     const { lastUsedPath, ignorePaths, commitMode } = await this.loadConfig();
     this.ignorePaths = ignorePaths;
     this.commitMode = commitMode;
@@ -94,17 +79,12 @@ export class PathConfig {
       defaultInput: defaultPath,
     });
 
-    // Normalize and resolve the path
     let resolvedPath = path.resolve(userInput.trim());
-
-    // If the path is relative, resolve it from the current working directory
     if (!path.isAbsolute(userInput)) {
       resolvedPath = path.resolve(process.cwd(), userInput);
     }
 
     this.storagePath = resolvedPath;
-
-    // Save config
     await this.saveConfig(this.storagePath, this.ignorePaths);
 
     console.log(`Storage path set to: ${this.storagePath}\n`);
@@ -113,9 +93,6 @@ export class PathConfig {
     return this.storagePath;
   }
 
-  /**
-   * Get the configured storage path (prompts if not set)
-   */
   async getStoragePath(): Promise<string> {
     if (!this.storagePath) {
       return await this.promptForPath();
@@ -123,9 +100,6 @@ export class PathConfig {
     return this.storagePath;
   }
 
-  /**
-   * Set the storage path directly (used in tests to bypass interactive prompt)
-   */
   setStoragePath(newPath: string): void {
     this.storagePath = newPath;
   }
@@ -142,9 +116,6 @@ export class PathConfig {
     return path.join(this.storagePath, ".rtvs");
   }
 
-  /**
-   * Ensure the storage directory exists
-   */
   async ensureStorageDirectory(): Promise<void> {
     try {
       await fs.access(this.storagePath);
@@ -152,7 +123,6 @@ export class PathConfig {
       if (error.code === "ENOENT") {
         logger.info(`Creating storage directory: ${this.storagePath}`);
         await fs.mkdir(this.storagePath, { recursive: true });
-        logger.info("Directory created successfully");
       } else {
         throw error;
       }
@@ -160,5 +130,4 @@ export class PathConfig {
   }
 }
 
-// Singleton instance
 export const pathConfig = new PathConfig();
