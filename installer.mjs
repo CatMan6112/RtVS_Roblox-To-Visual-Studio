@@ -1,0 +1,472 @@
+#!/usr/bin/env node
+/**
+ * RtVS Interactive Installer
+ * Standalone ES module - no external dependencies
+ * Run via: node installer.mjs
+ */
+
+import { execSync, spawn } from "child_process";
+import fs from "fs";
+import path from "path";
+import os from "os";
+import readline from "readline";
+
+const INSTALL_DIR = path.dirname(new URL(import.meta.url).pathname);
+
+// ─── ANSI Colors ────────────────────────────────────────────────────────────
+
+const c = {
+  reset:   "\x1b[0m",
+  bold:    "\x1b[1m",
+  dim:     "\x1b[2m",
+  red:     "\x1b[31m",
+  green:   "\x1b[32m",
+  yellow:  "\x1b[33m",
+  blue:    "\x1b[34m",
+  magenta: "\x1b[35m",
+  cyan:    "\x1b[36m",
+  white:   "\x1b[37m",
+};
+
+const isTTY = process.stdout.isTTY;
+const col = (code, text) => isTTY ? `${code}${text}${c.reset}` : text;
+
+// ─── Header ─────────────────────────────────────────────────────────────────
+
+function printHeader() {
+  console.log();
+  console.log(col(c.cyan + c.bold, "  ██████╗ ████████╗██╗   ██╗███████╗"));
+  console.log(col(c.cyan + c.bold, "  ██╔══██╗╚══██╔══╝██║   ██║██╔════╝"));
+  console.log(col(c.cyan + c.bold, "  ██████╔╝   ██║   ██║   ██║███████╗"));
+  console.log(col(c.cyan + c.bold, "  ██╔══██╗   ██║   ╚██╗ ██╔╝╚════██║"));
+  console.log(col(c.cyan + c.bold, "  ██║  ██║   ██║    ╚████╔╝ ███████║"));
+  console.log(col(c.cyan + c.bold, "  ╚═╝  ╚═╝   ╚═╝     ╚═══╝  ╚══════╝"));
+  console.log();
+  console.log(col(c.bold, "  Roblox to Visual Studio  -  Installer"));
+  console.log(col(c.dim, `  Install directory: ${INSTALL_DIR}`));
+  console.log();
+}
+
+// ─── Interactive arrow-key menu ──────────────────────────────────────────────
+
+async function selectMenu(question, options) {
+  return new Promise((resolve) => {
+    let selected = 0;
+
+    const render = () => {
+      // Move cursor up by (options.length + 1) if not first render
+      if (render.drawn) {
+        process.stdout.write(`\x1b[${options.length + 1}A`);
+      }
+      render.drawn = true;
+
+      console.log(col(c.bold, `? ${question}`) + col(c.dim, " (↑↓ arrows, Enter to confirm):"));
+      options.forEach((opt, i) => {
+        if (i === selected) {
+          console.log(col(c.cyan, `  ▶ ${opt}`));
+        } else {
+          console.log(`    ${col(c.dim, opt)}`);
+        }
+      });
+    };
+
+    render.drawn = false;
+    render();
+
+    if (!isTTY) {
+      // Non-interactive fallback: pick first option
+      process.stdout.write("\n");
+      resolve(options[0]);
+      return;
+    }
+
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.setEncoding("utf8");
+
+    const onKey = (key) => {
+      if (key === "\x03") {                 // Ctrl+C
+        process.stdin.setRawMode(false);
+        process.stdout.write("\n");
+        console.log(col(c.dim, "Cancelled."));
+        process.exit(0);
+      } else if (key === "\x1b[A") {        // Up arrow
+        selected = (selected - 1 + options.length) % options.length;
+        render();
+      } else if (key === "\x1b[B") {        // Down arrow
+        selected = (selected + 1) % options.length;
+        render();
+      } else if (key === "\r" || key === "\n") { // Enter
+        process.stdin.setRawMode(false);
+        process.stdin.removeListener("data", onKey);
+        process.stdout.write("\n");
+        resolve(options[selected]);
+      }
+    };
+
+    process.stdin.on("data", onKey);
+  });
+}
+
+// ─── Simple yes/no prompt ────────────────────────────────────────────────────
+
+async function confirm(question, defaultYes = false) {
+  const hint = defaultYes ? "(Y/n)" : "(y/N)";
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(`  ${col(c.bold, "?")} ${question} ${col(c.dim, hint)} `, (answer) => {
+      rl.close();
+      const a = answer.trim().toLowerCase();
+      if (a === "") resolve(defaultYes);
+      else resolve(a === "y" || a === "yes");
+    });
+  });
+}
+
+// ─── Status helpers ──────────────────────────────────────────────────────────
+
+const step  = (msg) => console.log(`\n  ${col(c.cyan,   "→")} ${msg}`);
+const ok    = (msg) => console.log(`  ${col(c.green,  "✓")} ${msg}`);
+const warn  = (msg) => console.log(`  ${col(c.yellow, "!")} ${msg}`);
+const fail  = (msg) => console.log(`  ${col(c.red,    "✗")} ${msg}`);
+const info  = (msg) => console.log(`  ${col(c.dim,    " ")} ${col(c.dim, msg)}`);
+
+// ─── Shell helpers ───────────────────────────────────────────────────────────
+
+function run(cmd, cwd, label) {
+  try {
+    execSync(cmd, { cwd, stdio: "inherit", shell: true });
+    return true;
+  } catch {
+    fail(`Command failed: ${label || cmd}`);
+    return false;
+  }
+}
+
+function fileExists(p) {
+  try { fs.accessSync(p); return true; } catch { return false; }
+}
+
+// ─── Platform helpers ─────────────────────────────────────────────────────────
+
+const platform = os.platform(); // 'win32' | 'darwin' | 'linux'
+const homeDir  = os.homedir();
+
+function getDesktopDir() {
+  if (platform === "win32") return path.join(homeDir, "Desktop");
+  // XDG_DESKTOP_DIR might be localised (e.g. ~/Escritorio)
+  const xdgConfig = path.join(homeDir, ".config", "user-dirs.dirs");
+  if (fileExists(xdgConfig)) {
+    const content = fs.readFileSync(xdgConfig, "utf8");
+    const m = content.match(/XDG_DESKTOP_DIR="?([^"\n]+)"?/);
+    if (m) return m[1].replace("$HOME", homeDir);
+  }
+  return path.join(homeDir, "Desktop");
+}
+
+// ─── Shortcut creation ───────────────────────────────────────────────────────
+
+function detectLinuxTerminal() {
+  const candidates = [
+    "x-terminal-emulator", "gnome-terminal", "xfce4-terminal",
+    "konsole", "xterm",
+  ];
+  for (const t of candidates) {
+    try { execSync(`which ${t}`, { stdio: "ignore" }); return t; } catch {}
+  }
+  return "xterm";
+}
+
+function desktopFileContent(installDir) {
+  const terminal = detectLinuxTerminal();
+  let execLine;
+  if (terminal === "gnome-terminal") {
+    execLine = `gnome-terminal -- bash -c "cd ${installDir}/server && npm start; exec bash"`;
+  } else if (terminal === "xfce4-terminal") {
+    execLine = `xfce4-terminal -e "bash -c \\"cd ${installDir}/server && npm start; exec bash\\""`;
+  } else if (terminal === "konsole") {
+    execLine = `konsole -e bash -c "cd ${installDir}/server && npm start; exec bash"`;
+  } else {
+    execLine = `${terminal} -e "bash -c \\"cd ${installDir}/server && npm start; exec bash\\""`;
+  }
+  return `[Desktop Entry]
+Version=1.0
+Type=Application
+Name=RtVS
+GenericName=Roblox to Visual Studio
+Comment=Start the RtVS sync server
+Exec=${execLine}
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;
+Keywords=roblox;studio;sync;
+`;
+}
+
+function commandFileContent(installDir) {
+  return `#!/usr/bin/env bash
+# RtVS Launcher
+cd "${installDir}/server"
+npm start
+`;
+}
+
+async function createDesktopShortcut(installDir) {
+  const desktopDir = getDesktopDir();
+
+  if (platform === "linux") {
+    const dest = path.join(desktopDir, "RtVS.desktop");
+    if (!fileExists(desktopDir)) fs.mkdirSync(desktopDir, { recursive: true });
+    fs.writeFileSync(dest, desktopFileContent(installDir), "utf8");
+    try { execSync(`chmod +x "${dest}"`); } catch {}
+    ok(`Desktop shortcut → ${dest}`);
+
+  } else if (platform === "darwin") {
+    const dest = path.join(desktopDir, "RtVS.command");
+    fs.writeFileSync(dest, commandFileContent(installDir), "utf8");
+    execSync(`chmod +x "${dest}"`);
+    ok(`Desktop shortcut → ${dest}`);
+
+  } else if (platform === "win32") {
+    const dest = path.join(desktopDir, "RtVS.lnk");
+    const startScript = path.join(installDir, "start-rtvs.bat");
+    const ps = `
+$WS = New-Object -ComObject WScript.Shell
+$SC = $WS.CreateShortcut("${dest.replace(/\\/g, "\\\\")}")
+$SC.TargetPath = "${startScript.replace(/\\/g, "\\\\")}"
+$SC.WorkingDirectory = "${installDir.replace(/\\/g, "\\\\")}"
+$SC.Description = "Start the RtVS sync server"
+$SC.Save()
+`;
+    execSync(`powershell -NoProfile -Command "${ps.replace(/\n/g, " ")}"`);
+    ok(`Desktop shortcut → ${dest}`);
+  }
+}
+
+async function createLauncherEntry(installDir) {
+  if (platform === "linux") {
+    const appDir = path.join(homeDir, ".local", "share", "applications");
+    if (!fileExists(appDir)) fs.mkdirSync(appDir, { recursive: true });
+    const dest = path.join(appDir, "rtvs.desktop");
+    fs.writeFileSync(dest, desktopFileContent(installDir), "utf8");
+    // Refresh desktop database if available
+    try { execSync("update-desktop-database ~/.local/share/applications", { stdio: "ignore" }); } catch {}
+    ok(`App launcher entry → ${dest}`);
+
+  } else if (platform === "darwin") {
+    const appsDir = path.join(homeDir, "Applications");
+    if (!fileExists(appsDir)) fs.mkdirSync(appsDir, { recursive: true });
+    const dest = path.join(appsDir, "RtVS.command");
+    fs.writeFileSync(dest, commandFileContent(installDir), "utf8");
+    execSync(`chmod +x "${dest}"`);
+    ok(`Application entry → ${dest}`);
+
+  } else if (platform === "win32") {
+    const startMenuDir = path.join(
+      process.env.APPDATA || homeDir,
+      "Microsoft", "Windows", "Start Menu", "Programs"
+    );
+    const dest = path.join(startMenuDir, "RtVS.lnk");
+    const startScript = path.join(installDir, "start-rtvs.bat");
+    const ps = `
+$WS = New-Object -ComObject WScript.Shell
+$SC = $WS.CreateShortcut("${dest.replace(/\\/g, "\\\\")}")
+$SC.TargetPath = "${startScript.replace(/\\/g, "\\\\")}"
+$SC.WorkingDirectory = "${installDir.replace(/\\/g, "\\\\")}"
+$SC.Description = "Start the RtVS sync server"
+$SC.Save()
+`;
+    execSync(`powershell -NoProfile -Command "${ps.replace(/\n/g, " ")}"`);
+    ok(`Start Menu entry → ${dest}`);
+  }
+}
+
+function createStartScript(installDir) {
+  if (platform === "win32") {
+    const dest = path.join(installDir, "start-rtvs.bat");
+    fs.writeFileSync(dest, `@echo off\ncd /d "${installDir}\\server"\nnpm start\npause\n`);
+    ok(`Launch script → ${dest}`);
+  } else {
+    const dest = path.join(installDir, "start-rtvs.sh");
+    fs.writeFileSync(dest, `#!/usr/bin/env bash\ncd "${installDir}/server"\nnpm start\n`);
+    execSync(`chmod +x "${dest}"`);
+    ok(`Launch script → ${dest}`);
+  }
+}
+
+// ─── Shortcut removal ────────────────────────────────────────────────────────
+
+function removeIfExists(p, label) {
+  if (fileExists(p)) {
+    fs.rmSync(p, { force: true });
+    ok(`Removed: ${label}`);
+  }
+}
+
+function removeShortcuts(installDir) {
+  const desktop = getDesktopDir();
+
+  if (platform === "linux") {
+    removeIfExists(path.join(desktop, "RtVS.desktop"), "desktop shortcut");
+    removeIfExists(path.join(homeDir, ".local", "share", "applications", "rtvs.desktop"), "app launcher entry");
+    try { execSync("update-desktop-database ~/.local/share/applications", { stdio: "ignore" }); } catch {}
+  } else if (platform === "darwin") {
+    removeIfExists(path.join(desktop, "RtVS.command"), "desktop shortcut");
+    removeIfExists(path.join(homeDir, "Applications", "RtVS.command"), "Applications entry");
+  } else if (platform === "win32") {
+    removeIfExists(path.join(desktop, "RtVS.lnk"), "desktop shortcut");
+    const sm = path.join(process.env.APPDATA || homeDir, "Microsoft", "Windows", "Start Menu", "Programs", "RtVS.lnk");
+    removeIfExists(sm, "Start Menu entry");
+  }
+}
+
+// ─── Install ─────────────────────────────────────────────────────────────────
+
+async function install() {
+  console.log();
+  console.log(col(c.bold, "  Installing RtVS"));
+  console.log(col(c.dim,  "  " + "─".repeat(44)));
+
+  step("Installing server dependencies…");
+  if (!run("npm install", path.join(INSTALL_DIR, "server"), "npm install")) {
+    fail("Installation failed - check the error above.");
+    process.exit(1);
+  }
+  ok("Dependencies installed.");
+
+  step("Deploying Roblox Studio plugin…");
+  if (!run("npm run deploy", path.join(INSTALL_DIR, "server"), "npm run deploy")) {
+    warn("Plugin deploy failed. You can re-run it later with: npm run deploy");
+  } else {
+    ok("Plugin deployed to Roblox Studio.");
+  }
+
+  step("Creating launch script…");
+  try {
+    createStartScript(INSTALL_DIR);
+  } catch (e) {
+    warn(`Could not create launch script: ${e.message}`);
+  }
+
+  console.log();
+
+  const wantDesktop = await confirm("Create a desktop shortcut?", false);
+  if (wantDesktop) {
+    try { await createDesktopShortcut(INSTALL_DIR); }
+    catch (e) { warn(`Desktop shortcut failed: ${e.message}`); }
+  }
+
+  const launcherLabel = platform === "win32" ? "Add to Start Menu?" :
+                        platform === "darwin" ? "Add to Applications folder?" :
+                        "Add to app launcher?";
+  const wantLauncher = await confirm(launcherLabel, false);
+  if (wantLauncher) {
+    try { await createLauncherEntry(INSTALL_DIR); }
+    catch (e) { warn(`Launcher entry failed: ${e.message}`); }
+  }
+
+  console.log();
+  console.log(col(c.green + c.bold, "  ✓ RtVS installed successfully!"));
+  console.log();
+  console.log(col(c.bold, "  Next steps:"));
+
+  const launchCmd = platform === "win32"
+    ? `  start-rtvs.bat`
+    : `  ./start-rtvs.sh`;
+
+  if (wantDesktop) {
+    info("  • Launch via the desktop shortcut, or:");
+  }
+  info(`  • Run: ${launchCmd}`);
+  info("  • Open Roblox Studio and use the RtVS plugin toolbar");
+  info("  • See QUICKSTART.md for usage instructions");
+  console.log();
+}
+
+// ─── Repair ──────────────────────────────────────────────────────────────────
+
+async function repair() {
+  console.log();
+  console.log(col(c.bold, "  Repairing RtVS"));
+  console.log(col(c.dim,  "  " + "─".repeat(44)));
+
+  step("Re-installing server dependencies…");
+  if (!run("npm install", path.join(INSTALL_DIR, "server"), "npm install")) {
+    fail("npm install failed - check the error above.");
+    process.exit(1);
+  }
+  ok("Dependencies installed.");
+
+  step("Re-deploying Roblox Studio plugin…");
+  if (!run("npm run deploy", path.join(INSTALL_DIR, "server"), "npm run deploy")) {
+    warn("Plugin deploy failed. Try running manually: cd server && npm run deploy");
+  } else {
+    ok("Plugin re-deployed.");
+  }
+
+  console.log();
+  console.log(col(c.green + c.bold, "  ✓ Repair complete."));
+  console.log();
+}
+
+// ─── Uninstall ───────────────────────────────────────────────────────────────
+
+async function uninstall() {
+  console.log();
+  console.log(col(c.bold, "  Uninstalling RtVS"));
+  console.log(col(c.dim,  "  " + "─".repeat(44)));
+
+  step("Removing shortcuts…");
+  try { removeShortcuts(INSTALL_DIR); }
+  catch (e) { warn(`Some shortcuts could not be removed: ${e.message}`); }
+
+  console.log();
+  const removeFiles = await confirm(
+    `Remove installed files? ${col(c.dim, `(${INSTALL_DIR})`)}`,
+    false
+  );
+
+  if (removeFiles) {
+    step("Removing files…");
+    if (platform === "win32") {
+      run(`rmdir /s /q "${INSTALL_DIR}"`, os.homedir(), "remove files");
+    } else {
+      run(`rm -rf "${INSTALL_DIR}"`, os.homedir(), "remove files");
+    }
+    console.log();
+    console.log(col(c.green + c.bold, "  ✓ RtVS has been uninstalled."));
+  } else {
+    console.log();
+    console.log(col(c.dim, "  Shortcuts removed. Files kept."));
+  }
+  console.log();
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+
+async function main() {
+  printHeader();
+
+  // Quick sanity check
+  const serverDir = path.join(INSTALL_DIR, "server");
+  if (!fileExists(serverDir)) {
+    fail(`Could not find server directory at: ${serverDir}`);
+    fail("Make sure you're running this from the RtVS install directory.");
+    process.exit(1);
+  }
+
+  const action = await selectMenu("What would you like to do", [
+    "Install RtVS",
+    "Repair RtVS",
+    "Uninstall RtVS",
+  ]);
+
+  if (action === "Install RtVS")   await install();
+  if (action === "Repair RtVS")    await repair();
+  if (action === "Uninstall RtVS") await uninstall();
+}
+
+main().catch((err) => {
+  console.error(`\n  ${c.red}Fatal error:${c.reset}`, err.message || err);
+  process.exit(1);
+});
