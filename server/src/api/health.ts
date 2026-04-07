@@ -6,7 +6,7 @@ import { Request, Response } from "express";
 import { PingResponse, StatusResponse } from "../types/api";
 import { getLatestVersion } from "../utils/version-checker";
 
-const VERSION = "0.1.5";
+const VERSION = "0.1.6";
 
 // Track last sync time
 let lastSyncTime: string | null = null;

@@ -4,7 +4,7 @@
 
 (works with any code editor btw, not just visual studio)
 
-**Version: 0.1.5**
+**Version: 0.1.6**
 
 A bidirectional synchronization system that connects Roblox Studio to your file system, enabling version control and external editing of Roblox game content.
 

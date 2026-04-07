@@ -1,7 +1,10 @@
 {
-  "version": "0.1.5",
-  "releaseDate": "2026-03-15",
+  "version": "0.1.6",
+  "releaseDate": "2026-04-07",
   "changelog": {
+    "0.1.6": [
+      "made property sync 1 way (from studio to file system) because who is actually updating properties manually from the file system? Also: it randomly set shit to 1 for.. some reason. also fixed now."
+    ],
     "0.1.5": [
       "added install script! why keep going to the server directory when you can install it to your home dir? Super easy! Even a start menu icon! [[ BUY NOW!!]] just kidding its free."
     ],

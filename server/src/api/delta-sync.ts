@@ -13,7 +13,7 @@ import { simpleHash } from "../change-tracker";
 import { logger } from "../utils/logger";
 import { RobloxInstance } from "../types/roblox";
 
-const VERSION = "0.1.5";
+const VERSION = "0.1.6";
 
 export async function handleGetManifest(
   _req: Request,

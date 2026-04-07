@@ -301,12 +301,12 @@ The plugin performs automatic version checking on startup.
 
 **On connection**:
 1. Plugin sends `GET /ping` to server
-2. Server responds with `{ status: "ok", version: "0.1.3" }`
+2. Server responds with `{ status: "ok", version: "0.1.6" }`
 3. Plugin compares versions
 
 **If versions match**:
 ```
-RtVS Server connected (v0.1.3)
+RtVS Server connected (v0.1.6)
 ```
 
 **If plugin is outdated**:
@@ -323,8 +323,8 @@ Download RtVS.rbxm and place it in your Plugins folder:
 
 Plugin functionality has been suspended.
 ========================================
-Plugin Version: 0.1.0
-Server Version: 0.1.3
+Plugin Version: 0.1.4
+Server Version: 0.1.5
 ========================================
 ```
 
@@ -337,8 +337,8 @@ Outdated Server!! Please Update Via Github at
 https://github.com/CatMan6112/RtVS_Roblox-To-Visual-Studio/!!
 Plugin Functionality has been Suspended!!
 ========================================
-Plugin Version: 0.1.3
-Server Version: 0.1.0
+Plugin Version: 0.1.5
+Server Version: 0.1.4
 ========================================
 ```
 
@@ -499,5 +499,5 @@ git push origin main
 
 ## Version
 
-Plugin Version: 0.1.3 (Public Beta)
+Plugin Version: 0.1.6 (Public Beta)
 
