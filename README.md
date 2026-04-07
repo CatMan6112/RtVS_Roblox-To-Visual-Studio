@@ -2,7 +2,7 @@
 
 ![RtVS Logo](https://cdn.catman6112.dev/Images/RtVS.png)
 
-(works with any code editor btw, not just visual studio)
+(works with any code editor btw, not just visual studio code)
 
 **Version: 0.1.6**
 
