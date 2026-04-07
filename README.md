@@ -72,12 +72,11 @@ The system consists of two main components:
 
 1. Install RtVS using the installer
 2. Start the server with `npm start`
-3. Use priority modes:
+3. Use priority mode:
    - Bidirectional Sync
         Checks for changes on both sides continuously, allows editing on studio to be synced to scripts while changes on the file system are synced to the script.
-   - Smart Sync
-        **EXPERIMENTAL!** hashes changes on studio's side, only re-syncs what has changed since the last sync. Once it's tested and relaible, will be reccomended for all games.
 > Prioritize Studio, Prioritize Server, and Full Sync have all been depreciated to Bidirectional Sync which is relaible and reccomended for working with collaborators or just any usage in general.
+> In addition, Smart Sync has been removed as it just like... didn't function at all ...
 
 See `plugin/README.md` for detailed usage.
 

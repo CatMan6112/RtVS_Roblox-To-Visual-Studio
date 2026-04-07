@@ -125,7 +125,7 @@ local function getInstanceProperties(instance)
 	return properties
 end
 
--- Path utilities (shared with main.lua for smart sync)
+-- Path utilities (shared with main.lua)
 local sanitizeName = PathUtils.sanitizeName
 local getFileSystemName = PathUtils.getFileSystemName
 local getInstanceFilePath = PathUtils.getInstanceFilePath
