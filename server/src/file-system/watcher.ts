@@ -128,6 +128,12 @@ export class FileSystemWatcher {
       return;
     }
 
+    // Object properties are strictly one-way (Studio -> disk). FS edits to
+    // __main__.json must not propagate back to Studio.
+    if (path.basename(relativePath) === "__main__.json") {
+      return;
+    }
+
     const normalizedRelative = relativePath.replace(/\\/g, "/");
     if (this.ignorePaths.some((p) => matchesIgnorePath(normalizedRelative, p))) {
       return;

@@ -251,6 +251,12 @@ function Deserializer.applyChange(change)
 	local pathParts = Deserializer.parsePath(filePath)
 
 	if changeType == "delete" then
+		-- Object properties are one-way (Studio -> disk). Deleting a property
+		-- file on disk must not destroy the Studio instance.
+		if filePath:match("__main__%.json$") then
+			return true
+		end
+
 		-- Suppress echo for the deleted path
 		if Deserializer.onBeforeApply then
 			Deserializer.onBeforeApply(filePath)
@@ -328,66 +334,12 @@ function Deserializer.applyChange(change)
 			return false
 		end
 
-	-- Check if this is a __main__.json file (properties)
+	-- Object properties are one-way (Studio -> disk). Ignore any __main__.json
+	-- changes coming from the server: do not parse, do not create/rename
+	-- instances, do not apply properties.
 	elseif filePath:match("__main__%.json$") then
-		-- Suppress echo for this path AND sibling .lua path
-		if Deserializer.onBeforeApply then
-			Deserializer.onBeforeApply(filePath)
-			-- Also suppress the sibling __main__.lua (property changes on scripts
-			-- with children trigger Changed events that resend the source too)
-			local luaPath = filePath:gsub("__main__%.json$", "__main__.lua")
-			Deserializer.onBeforeApply(luaPath)
-		end
-
-		-- Parse JSON properties
-		local success, properties = pcall(function()
-			return HttpService:JSONDecode(content)
-		end)
-
-		if not success then
-			warn("Failed to parse JSON:", properties)
-			return false
-		end
-
-		-- Extract real name and fsName for deduplication handling
-		local realName = properties.Name
-		local fsName = properties._fsName -- Only present if folder name differs from instance name
-
-		-- Check if this is a service-level __main__.json (e.g., "Workspace/__main__.json")
-		if #pathParts == 1 then
-			-- This is a service-level properties file
-			local serviceName = pathParts[1]
-			local service = game:GetService(serviceName)
-
-			if service then
-				-- Apply properties to the service
-				Deserializer.applyProperties(service, properties.Properties)
-				print("Updated service properties:", service:GetFullName())
-				return true
-			else
-				warn("Could not find service:", serviceName)
-				return false
-			end
-		else
-			-- This is a regular instance __main__.json
-			-- Pass the real name from JSON and fsName for proper instance creation/lookup
-			local instance = Deserializer.findOrCreateInstance(pathParts, properties.ClassName, realName, fsName)
-
-			if instance then
-				-- Ensure the instance has the correct name (may have been created with wrong name before)
-				if realName and instance.Name ~= realName then
-					instance.Name = realName
-				end
-
-				-- Apply properties
-				Deserializer.applyProperties(instance, properties.Properties)
-				print("Updated properties:", instance:GetFullName())
-				return true
-			else
-				warn("Could not find/create instance for", filePath)
-				return false
-			end
-		end
+		print("Ignoring property file change:", filePath)
+		return true
 	else
 		warn("Unknown file type:", filePath)
 		return false
