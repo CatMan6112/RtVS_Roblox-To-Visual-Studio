@@ -91,6 +91,7 @@ See `plugin/README.md` for detailed usage.
 ## Requirements
 
 - Node.js 18+
+   > automatically installed by install script
 - Roblox Studio
 - Windows, macOS, or Linux
 
