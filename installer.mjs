@@ -49,9 +49,13 @@ function printHeader() {
 
 // ─── Interactive arrow-key menu ──────────────────────────────────────────────
 
-async function selectMenu(question, options) {
+async function selectMenu(question, options, { allowEscape = false } = {}) {
   return new Promise((resolve) => {
     let selected = 0;
+
+    const hint = allowEscape
+      ? " (↑↓ arrows, Enter to confirm, Esc to go back):"
+      : " (↑↓ arrows, Enter to confirm):";
 
     const render = () => {
       // Move cursor up by (options.length + 1) if not first render
@@ -60,7 +64,7 @@ async function selectMenu(question, options) {
       }
       render.drawn = true;
 
-      console.log(col(c.bold, `? ${question}`) + col(c.dim, " (↑↓ arrows, Enter to confirm):"));
+      console.log(col(c.bold, `? ${question}`) + col(c.dim, hint));
       options.forEach((opt, i) => {
         if (i === selected) {
           console.log(col(c.cyan, `  ▶ ${opt}`));
@@ -84,9 +88,14 @@ async function selectMenu(question, options) {
     process.stdin.resume();
     process.stdin.setEncoding("utf8");
 
+    const cleanup = () => {
+      process.stdin.setRawMode(false);
+      process.stdin.removeListener("data", onKey);
+    };
+
     const onKey = (key) => {
       if (key === "\x03") {                 // Ctrl+C
-        process.stdin.setRawMode(false);
+        cleanup();
         process.stdout.write("\n");
         console.log(col(c.dim, "Cancelled."));
         process.exit(0);
@@ -96,9 +105,12 @@ async function selectMenu(question, options) {
       } else if (key === "\x1b[B") {        // Down arrow
         selected = (selected + 1) % options.length;
         render();
+      } else if (allowEscape && key === "\x1b") { // Bare Escape
+        cleanup();
+        process.stdout.write("\n");
+        resolve(null);
       } else if (key === "\r" || key === "\n") { // Enter
-        process.stdin.setRawMode(false);
-        process.stdin.removeListener("data", onKey);
+        cleanup();
         process.stdout.write("\n");
         resolve(options[selected]);
       }
@@ -162,6 +174,201 @@ function getDesktopDir() {
     if (m) return m[1].replace("$HOME", homeDir);
   }
   return path.join(homeDir, "Desktop");
+}
+
+// ─── Install discovery ───────────────────────────────────────────────────────
+
+function isValidInstall(dir) {
+  if (!dir || !fileExists(dir)) return false;
+  return fileExists(path.join(dir, "installer.mjs")) &&
+         fileExists(path.join(dir, "server", "package.json"));
+}
+
+function readInstallVersion(dir) {
+  const versionFile = path.join(dir, "version.json");
+  if (fileExists(versionFile)) {
+    try {
+      const v = JSON.parse(fs.readFileSync(versionFile, "utf8"));
+      if (v && typeof v.version === "string") return v.version;
+    } catch {}
+  }
+  const pkgFile = path.join(dir, "server", "package.json");
+  if (fileExists(pkgFile)) {
+    try {
+      const p = JSON.parse(fs.readFileSync(pkgFile, "utf8"));
+      if (p && typeof p.version === "string") return p.version;
+    } catch {}
+  }
+  return null;
+}
+
+function candidateInstallDirs() {
+  const dirs = [INSTALL_DIR];
+
+  if (platform === "win32") {
+    const localApp = process.env.LOCALAPPDATA || path.join(homeDir, "AppData", "Local");
+    const userDocs = path.join(homeDir, "Documents");
+    dirs.push(
+      path.join(localApp, "RtVS"),
+      path.join(homeDir, "RtVS"),
+      path.join(userDocs, "RtVS"),
+      path.join(userDocs, "RtVS_Roblox-To-Visual-Studio"),
+    );
+  } else {
+    dirs.push(
+      path.join(homeDir, "RtVS"),
+      path.join(homeDir, "RtVS_Roblox-To-Visual-Studio"),
+      path.join(homeDir, "Documents", "RtVS"),
+      path.join(homeDir, "Documents", "RtVS_Roblox-To-Visual-Studio"),
+      path.join(homeDir, ".local", "share", "RtVS"),
+    );
+  }
+
+  // Shallow glob: any ~/RtVS* or ~/Documents/RtVS* sibling
+  const globParents = platform === "win32"
+    ? [homeDir, path.join(homeDir, "Documents")]
+    : [homeDir, path.join(homeDir, "Documents")];
+  for (const parent of globParents) {
+    if (!fileExists(parent)) continue;
+    try {
+      for (const entry of fs.readdirSync(parent)) {
+        if (/^RtVS/i.test(entry)) dirs.push(path.join(parent, entry));
+      }
+    } catch {}
+  }
+
+  return dirs;
+}
+
+function findInstalls() {
+  const seen = new Set();
+  const results = [];
+  for (const raw of candidateInstallDirs()) {
+    let resolved;
+    try { resolved = fs.realpathSync(raw); } catch { resolved = path.resolve(raw); }
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    if (isValidInstall(resolved)) {
+      results.push({ path: resolved, version: readInstallVersion(resolved) });
+    }
+  }
+  return results;
+}
+
+// ─── Install picker ──────────────────────────────────────────────────────────
+
+async function promptPath(question, { allowEscape = false } = {}) {
+  // Raw-mode line editor so we can catch bare ESC as "go back".
+  // readline can't distinguish ESC from an arrow-key CSI sequence reliably.
+  if (!isTTY) {
+    return new Promise((resolve) => {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      rl.question(`  ${col(c.bold, "?")} ${question} `, (answer) => {
+        rl.close();
+        resolve(answer.trim());
+      });
+    });
+  }
+
+  return new Promise((resolve) => {
+    const hint = allowEscape ? col(c.dim, " (Esc to go back)") : "";
+    process.stdout.write(`  ${col(c.bold, "?")} ${question}${hint} `);
+
+    let buffer = "";
+
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.setEncoding("utf8");
+
+    const cleanup = () => {
+      process.stdin.setRawMode(false);
+      process.stdin.removeListener("data", onKey);
+    };
+
+    const onKey = (data) => {
+      if (data === "\x03") {                         // Ctrl+C
+        cleanup();
+        process.stdout.write("\n");
+        console.log(col(c.dim, "Cancelled."));
+        process.exit(0);
+      } else if (allowEscape && data === "\x1b") {   // Bare Escape
+        cleanup();
+        process.stdout.write("\n");
+        resolve(null);
+      } else if (data === "\r" || data === "\n") {   // Enter
+        cleanup();
+        process.stdout.write("\n");
+        resolve(buffer.trim());
+      } else if (data === "\x7f" || data === "\b") { // Backspace / DEL
+        if (buffer.length > 0) {
+          buffer = buffer.slice(0, -1);
+          process.stdout.write("\b \b");
+        }
+      } else if (data.charCodeAt(0) < 32 || data.startsWith("\x1b")) {
+        // Other control char or CSI sequence — ignore
+      } else {
+        buffer += data;
+        process.stdout.write(data);
+      }
+    };
+
+    process.stdin.on("data", onKey);
+  });
+}
+
+async function pickInstall(action) {
+  // Outer loop: re-shows the install picker if the user escapes out of the
+  // custom-path prompt. Returns null if the user escapes out of the picker
+  // itself (caller should treat that as "back to main menu").
+  while (true) {
+    const installs = findInstalls();
+
+    console.log();
+    if (installs.length === 0) {
+      warn("No RtVS installs were auto-detected.");
+    } else {
+      info(`Found ${installs.length} RtVS install${installs.length === 1 ? "" : "s"}.`);
+    }
+
+    const CUSTOM = "Custom location...";
+    const options = installs.map(i => {
+      const ver = i.version ? `v${i.version}` : "unknown version";
+      return `${i.path}  ${col(c.dim, `(${ver})`)}`;
+    });
+    options.push(CUSTOM);
+
+    const picked = await selectMenu(
+      `Select RtVS install to ${action}`,
+      options,
+      { allowEscape: true }
+    );
+
+    if (picked === null) return null;                  // Esc → back to main menu
+
+    if (picked !== CUSTOM) {
+      const idx = options.indexOf(picked);
+      return installs[idx].path;
+    }
+
+    // Custom path loop: Esc here bounces back to the picker above.
+    let bounced = false;
+    while (true) {
+      const entered = await promptPath("Enter RtVS install path:", { allowEscape: true });
+      if (entered === null) { bounced = true; break; } // Esc → re-show picker
+      if (!entered) {
+        fail("No path entered.");
+        continue;
+      }
+      const resolved = path.resolve(entered.replace(/^~(?=$|\/|\\)/, homeDir));
+      if (!isValidInstall(resolved)) {
+        fail(`Not a valid RtVS install: ${resolved}`);
+        info("  (must contain installer.mjs and server/package.json)");
+        continue;
+      }
+      return resolved;
+    }
+    if (bounced) continue;
+  }
 }
 
 // ─── Shortcut creation ───────────────────────────────────────────────────────
@@ -383,22 +590,42 @@ async function install() {
   console.log();
 }
 
+// ─── Update ──────────────────────────────────────────────────────────────────
+
+async function update(targetDir) {
+  console.log();
+  console.log(col(c.bold, "  Updating RtVS"));
+  console.log(col(c.dim,  "  " + "─".repeat(44)));
+  info(`Target: ${targetDir}`);
+
+  step("Checking for updates and downloading latest files…");
+  if (!run("npm run update", path.join(targetDir, "server"), "npm run update")) {
+    fail("Update failed - check the error above.");
+    process.exit(1);
+  }
+
+  console.log();
+  console.log(col(c.green + c.bold, "  ✓ Update complete."));
+  console.log();
+}
+
 // ─── Repair ──────────────────────────────────────────────────────────────────
 
-async function repair() {
+async function repair(targetDir) {
   console.log();
   console.log(col(c.bold, "  Repairing RtVS"));
   console.log(col(c.dim,  "  " + "─".repeat(44)));
+  info(`Target: ${targetDir}`);
 
   step("Re-installing server dependencies…");
-  if (!run("npm install", path.join(INSTALL_DIR, "server"), "npm install")) {
+  if (!run("npm install", path.join(targetDir, "server"), "npm install")) {
     fail("npm install failed - check the error above.");
     process.exit(1);
   }
   ok("Dependencies installed.");
 
   step("Re-deploying Roblox Studio plugin…");
-  if (!run("npm run deploy", path.join(INSTALL_DIR, "server"), "npm run deploy")) {
+  if (!run("npm run deploy", path.join(targetDir, "server"), "npm run deploy")) {
     warn("Plugin deploy failed. Try running manually: cd server && npm run deploy");
   } else {
     ok("Plugin re-deployed.");
@@ -411,27 +638,28 @@ async function repair() {
 
 // ─── Uninstall ───────────────────────────────────────────────────────────────
 
-async function uninstall() {
+async function uninstall(targetDir) {
   console.log();
   console.log(col(c.bold, "  Uninstalling RtVS"));
   console.log(col(c.dim,  "  " + "─".repeat(44)));
+  info(`Target: ${targetDir}`);
 
   step("Removing shortcuts…");
-  try { removeShortcuts(INSTALL_DIR); }
+  try { removeShortcuts(targetDir); }
   catch (e) { warn(`Some shortcuts could not be removed: ${e.message}`); }
 
   console.log();
   const removeFiles = await confirm(
-    `Remove installed files? ${col(c.dim, `(${INSTALL_DIR})`)}`,
+    `Remove installed files? ${col(c.dim, `(${targetDir})`)}`,
     false
   );
 
   if (removeFiles) {
     step("Removing files…");
     if (platform === "win32") {
-      run(`rmdir /s /q "${INSTALL_DIR}"`, os.homedir(), "remove files");
+      run(`rmdir /s /q "${targetDir}"`, os.homedir(), "remove files");
     } else {
-      run(`rm -rf "${INSTALL_DIR}"`, os.homedir(), "remove files");
+      run(`rm -rf "${targetDir}"`, os.homedir(), "remove files");
     }
     console.log();
     console.log(col(c.green + c.bold, "  ✓ RtVS has been uninstalled."));
@@ -455,15 +683,36 @@ async function main() {
     process.exit(1);
   }
 
-  const action = await selectMenu("What would you like to do", [
-    "Install RtVS",
-    "Repair RtVS",
-    "Uninstall RtVS",
-  ]);
+  while (true) {
+    const action = await selectMenu("What would you like to do", [
+      "Install RtVS",
+      "Update RtVS",
+      "Repair RtVS",
+      "Uninstall RtVS",
+      "Exit",
+    ], { allowEscape: true });
 
-  if (action === "Install RtVS")   await install();
-  if (action === "Repair RtVS")    await repair();
-  if (action === "Uninstall RtVS") await uninstall();
+    if (action === null || action === "Exit") {
+      console.log(col(c.dim, "  Bye."));
+      return;
+    }
+
+    if (action === "Install RtVS") {
+      await install();
+      return;
+    }
+
+    const verb = action === "Update RtVS" ? "update"
+               : action === "Repair RtVS" ? "repair"
+               : "uninstall";
+    const target = await pickInstall(verb);
+    if (target === null) continue; // Esc out of picker → back to main menu
+
+    if (action === "Update RtVS")    await update(target);
+    if (action === "Repair RtVS")    await repair(target);
+    if (action === "Uninstall RtVS") await uninstall(target);
+    return;
+  }
 }
 
 main().catch((err) => {
