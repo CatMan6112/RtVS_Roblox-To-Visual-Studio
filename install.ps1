@@ -121,11 +121,13 @@ function Setup-Repo {
   Write-Step "Setting up RtVS at $InstallDir…"
 
   if (Test-Path (Join-Path $InstallDir ".git")) {
-    Write-Info "Existing installation found - updating…"
+    Write-Info "Existing installation found - syncing to latest main…"
+    Write-Info "(any local modifications in $InstallDir will be discarded)"
     Push-Location $InstallDir
-    git pull --ff-only
+    git fetch --depth 1 origin main
+    git reset --hard origin/main
     Pop-Location
-    Write-Ok "Repository updated."
+    Write-Ok "Repository synced."
   } else {
     if (Test-Path $InstallDir) {
       Write-Warn "Directory exists but is not a git repo - removing it first."

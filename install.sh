@@ -10,7 +10,13 @@ MIN_NODE_MAJOR=18
 
 # If install.sh is being run from inside the repo itself, use that directory
 # directly instead of cloning (e.g. during development or after a manual clone).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+# Guard BASH_SOURCE[0] with :- because it's unset when the script is piped via
+# sh -c "$(curl ...)" under `set -u`.
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+else
+  SCRIPT_DIR=""
+fi
 if [ -n "$SCRIPT_DIR" ] && [ -f "${SCRIPT_DIR}/installer.mjs" ]; then
   INSTALL_DIR="$SCRIPT_DIR"
 fi
@@ -183,9 +189,11 @@ setup_repo() {
   step "Setting up RtVS at ${INSTALL_DIR}…"
 
   if [ -d "${INSTALL_DIR}/.git" ]; then
-    info "Existing installation found - updating…"
-    git -C "${INSTALL_DIR}" pull --ff-only
-    ok "Repository updated."
+    info "Existing installation found - syncing to latest main…"
+    info "(any local modifications in ${INSTALL_DIR} will be discarded)"
+    git -C "${INSTALL_DIR}" fetch --depth 1 origin main
+    git -C "${INSTALL_DIR}" reset --hard origin/main
+    ok "Repository synced."
   else
     if [ -d "${INSTALL_DIR}" ]; then
       warn "Directory exists but is not a git repo - removing it first."
