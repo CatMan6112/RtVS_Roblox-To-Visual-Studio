@@ -19,14 +19,12 @@ export async function buildPlugin(): Promise<string> {
   let deserializerSource: string;
   let studioWatcherSource: string;
   let pathUtilsSource: string;
-  let hashSource: string;
 
   try {
     mainSource = await fs.readFile(path.join(pluginDir, 'main.lua'), 'utf-8');
     deserializerSource = await fs.readFile(path.join(pluginDir, 'deserializer.lua'), 'utf-8');
     studioWatcherSource = await fs.readFile(path.join(pluginDir, 'studio-watcher.lua'), 'utf-8');
     pathUtilsSource = await fs.readFile(path.join(pluginDir, 'path-utils.lua'), 'utf-8');
-    hashSource = await fs.readFile(path.join(pluginDir, 'hash.lua'), 'utf-8');
   } catch (error) {
     throw new Error(`Failed to read plugin source files: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -57,12 +55,6 @@ export async function buildPlugin(): Promise<string> {
         ClassName: 'ModuleScript',
         Name: 'path-utils',
         Source: pathUtilsSource,
-        Children: []
-      },
-      {
-        ClassName: 'ModuleScript',
-        Name: 'hash',
-        Source: hashSource,
         Children: []
       }
     ]
