@@ -311,7 +311,13 @@ local function serializeProperty(value)
 		return tostring(value)
 	elseif valueType == "Instance" then
 		return value:GetFullName()
-	elseif valueType == "string" or valueType == "number" or valueType == "boolean" then
+	elseif valueType == "number" then
+		-- JSONEncode rejects NaN and +/-inf; coerce to nil-safe sentinel
+		if value ~= value or value == math.huge or value == -math.huge then
+			return tostring(value)
+		end
+		return value
+	elseif valueType == "string" or valueType == "boolean" then
 		return value
 	else
 		return tostring(value)
@@ -343,7 +349,11 @@ local function getInstanceProperties(instance)
 
 	local attributes = instance:GetAttributes()
 	if next(attributes) ~= nil then
-		properties.Attributes = attributes
+		local serialized = {}
+		for k, v in pairs(attributes) do
+			serialized[k] = serializeProperty(v)
+		end
+		properties.Attributes = serialized
 	end
 
 	return properties
