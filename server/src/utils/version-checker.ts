@@ -56,8 +56,9 @@ async function fetchLatestVersion(): Promise<VersionInfo | null> {
  * Returns: 1 if v1 > v2, -1 if v1 < v2, 0 if equal
  */
 export function compareVersions(v1: string, v2: string): number {
-  const parts1 = v1.split(".").map(Number);
-  const parts2 = v2.split(".").map(Number);
+  // Strip prerelease/build suffix (e.g. "0.1.6-hotfix" -> "0.1.6") before parsing
+  const parts1 = v1.split(/[-+]/)[0].split(".").map(Number);
+  const parts2 = v2.split(/[-+]/)[0].split(".").map(Number);
 
   for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
     const num1 = parts1[i] || 0;

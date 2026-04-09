@@ -16,7 +16,7 @@ end
 
 local SERVER_URL = "http://localhost:8080"
 local POLL_INTERVAL = 2
-local PLUGIN_VERSION = "0.1.6"
+local PLUGIN_VERSION = "0.1.6-hotfix"
 
 local MAX_CHUNK_SIZE = 800000
 local YIELD_INTERVAL = 100
