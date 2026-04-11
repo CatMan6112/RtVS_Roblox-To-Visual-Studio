@@ -1,7 +1,10 @@
 {
-  "version": "0.1.6-hotfix",
-  "releaseDate": "2026-04-08",
+  "version": "0.1.7",
+  "releaseDate": "2026-04-10",
   "changelog": {
+    "0.1.7": [
+      "fixed non utf8 text breaking syncing"
+    ],
     "0.1.6-hotfix": [
       "fixed a really weird and specific issue where it would fail to convert the game into json for some reason"
     ],

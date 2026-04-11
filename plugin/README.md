@@ -301,12 +301,12 @@ The plugin performs automatic version checking on startup.
 
 **On connection**:
 1. Plugin sends `GET /ping` to server
-2. Server responds with `{ status: "ok", version: "0.1.6-hotfix" }`
+2. Server responds with `{ status: "ok", version: "0.1.7" }`
 3. Plugin compares versions
 
 **If versions match**:
 ```
-RtVS Server connected (v0.1.6-hotfix)
+RtVS Server connected (v0.1.7)
 ```
 
 **If plugin is outdated**:
@@ -499,5 +499,5 @@ git push origin main
 
 ## Version
 
-Plugin Version: 0.1.6-hotfix (Public Beta)
+Plugin Version: 0.1.7 (Public Beta)
 
