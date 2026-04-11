@@ -130,6 +130,55 @@ local sanitizeName = PathUtils.sanitizeName
 local getFileSystemName = PathUtils.getFileSystemName
 local getInstanceFilePath = PathUtils.getInstanceFilePath
 
+-- Walk a value to pinpoint the field responsible for a JSONEncode failure.
+local function diagnoseJsonError(data, path)
+	path = path or "<root>"
+	local wrapper = (type(data) == "table") and data or { data }
+	local ok, err = pcall(function()
+		HttpService:JSONEncode(wrapper)
+	end)
+	if ok then
+		return nil
+	end
+
+	if type(data) ~= "table" then
+		return string.format("%s (type=%s, value=%s): %s",
+			path, typeof(data), string.sub(tostring(data), 1, 120), tostring(err))
+	end
+
+	for k, v in pairs(data) do
+		local keyType = type(k)
+		if keyType ~= "string" and keyType ~= "number" then
+			return string.format("%s has non-string/number key (type=%s): %s",
+				path, keyType, tostring(err))
+		end
+		local childErr = diagnoseJsonError(v, path .. "." .. tostring(k))
+		if childErr then
+			return childErr
+		end
+	end
+
+	return string.format("%s (table itself fails, possibly cyclic or mixed string/number keys): %s",
+		path, tostring(err))
+end
+
+-- Encode a properties payload with diagnostic output on failure.
+-- Returns the JSON string, or nil if encoding failed (after warning).
+local function encodePropertiesJson(payload, contextLabel)
+	local ok, result = pcall(function()
+		return HttpService:JSONEncode(payload)
+	end)
+	if ok then
+		return result
+	end
+	warn("Failed to JSON-encode properties for '" .. tostring(contextLabel) .. "': " .. tostring(result))
+	local diag = diagnoseJsonError(payload, tostring(contextLabel))
+	if diag then
+		warn("   Offending field: " .. diag)
+	end
+	return nil
+end
+
 -- Send file change to server
 local function sendFileChange(filePath, content, changeType)
 	local success, response = pcall(function()
@@ -237,7 +286,10 @@ local function handlePropertyChanged(instance)
 				Name = instance.Name,
 				Properties = getInstanceProperties(instance)
 			}
-			sendFileChange(jsonPath, HttpService:JSONEncode(properties), "update")
+			local encoded = encodePropertiesJson(properties, instance:GetFullName())
+			if encoded then
+				sendFileChange(jsonPath, encoded, "update")
+			end
 		end
 	else
 		-- Non-script object - update __main__.json
@@ -251,7 +303,10 @@ local function handlePropertyChanged(instance)
 			Name = instance.Name,
 			Properties = getInstanceProperties(instance)
 		}
-		sendFileChange(filePath, HttpService:JSONEncode(properties), "update")
+		local encoded = encodePropertiesJson(properties, instance:GetFullName())
+		if encoded then
+			sendFileChange(filePath, encoded, "update")
+		end
 	end
 end
 
@@ -274,7 +329,10 @@ local function handleInstanceAdded(instance)
 				Name = instance.Name,
 				Properties = getInstanceProperties(instance)
 			}
-			sendFileChange(jsonPath, HttpService:JSONEncode(properties), "create")
+			local encoded = encodePropertiesJson(properties, instance:GetFullName())
+			if encoded then
+				sendFileChange(jsonPath, encoded, "create")
+			end
 		end
 	else
 		-- Non-script object
@@ -283,7 +341,10 @@ local function handleInstanceAdded(instance)
 			Name = instance.Name,
 			Properties = getInstanceProperties(instance)
 		}
-		sendFileChange(filePath, HttpService:JSONEncode(properties), "create")
+		local encoded = encodePropertiesJson(properties, instance:GetFullName())
+		if encoded then
+			sendFileChange(filePath, encoded, "create")
+		end
 	end
 end
 

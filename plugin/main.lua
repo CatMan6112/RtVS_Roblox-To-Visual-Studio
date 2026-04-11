@@ -392,13 +392,55 @@ local function countObjects(data)
 	return count
 end
 
--- Get JSON size of data
-local function getJsonSize(data)
+-- Walk a value to pinpoint the field responsible for a JSONEncode failure.
+-- Returns a human-readable path string, or nil if the value re-encodes cleanly.
+local function diagnoseJsonError(data, path)
+	path = path or "<root>"
+	local wrapper = (type(data) == "table") and data or { data }
+	local ok, err = pcall(function()
+		HttpService:JSONEncode(wrapper)
+	end)
+	if ok then
+		return nil
+	end
+
+	if type(data) ~= "table" then
+		return string.format("%s (type=%s, value=%s): %s",
+			path, typeof(data), string.sub(tostring(data), 1, 120), tostring(err))
+	end
+
+	for k, v in pairs(data) do
+		local keyType = type(k)
+		if keyType ~= "string" and keyType ~= "number" then
+			return string.format("%s has non-string/number key (type=%s): %s",
+				path, keyType, tostring(err))
+		end
+		local childErr = diagnoseJsonError(v, path .. "." .. tostring(k))
+		if childErr then
+			return childErr
+		end
+	end
+
+	return string.format("%s (table itself fails, possibly cyclic or mixed string/number keys): %s",
+		path, tostring(err))
+end
+
+-- Get JSON size of data. On encode failure, warns with the offending path.
+local function getJsonSize(data, contextName)
 	local success, json = pcall(function()
 		return HttpService:JSONEncode(data)
 	end)
 	if success then
 		return #json
+	end
+
+	local label = contextName
+		or (type(data) == "table" and data.Name)
+		or "<unknown>"
+	warn("Failed to JSON-encode " .. tostring(label) .. ": " .. tostring(json))
+	local diag = diagnoseJsonError(data, tostring(label))
+	if diag then
+		warn("   Offending field: " .. diag)
 	end
 	return 0
 end
@@ -416,7 +458,7 @@ end
 -- Count estimated chunks needed for an instance tree
 local function countChunksNeeded(instanceData)
 	local count = 0
-	local instanceSize = getJsonSize(instanceData)
+	local instanceSize = getJsonSize(instanceData, instanceData and instanceData.Name)
 
 	if instanceSize <= MAX_CHUNK_SIZE then
 		-- Fits in one chunk
@@ -502,15 +544,28 @@ local function sendServiceChunk(sessionId, serviceName, serviceData)
 	-- Throttle to avoid rate limits
 	throttleRequest()
 
+	local payload = {
+		sessionId = sessionId,
+		type = "service",
+		serviceName = serviceName,
+		serviceData = serviceData
+	}
+	local encodeOk, jsonPayload = pcall(function()
+		return HttpService:JSONEncode(payload)
+	end)
+	if not encodeOk then
+		warn("Failed to JSON-encode service chunk '" .. tostring(serviceName) .. "': " .. tostring(jsonPayload))
+		local diag = diagnoseJsonError(serviceData, serviceName)
+		if diag then
+			warn("   Offending field: " .. diag)
+		end
+		return false
+	end
+
 	local success, response = pcall(function()
 		return HttpService:PostAsync(
 			SERVER_URL .. "/sync/chunk",
-			HttpService:JSONEncode({
-				sessionId = sessionId,
-				type = "service",
-				serviceName = serviceName,
-				serviceData = serviceData
-			}),
+			jsonPayload,
 			Enum.HttpContentType.ApplicationJson
 		)
 	end)
@@ -529,16 +584,30 @@ end
 
 -- Send a Workspace chunk (flat children array)
 local function sendWorkspaceChunk(sessionId, chunkIndex, totalChunks, children)
+	local payload = {
+		sessionId = sessionId,
+		type = "workspace_chunk",
+		chunkIndex = chunkIndex,
+		totalChunks = totalChunks,
+		children = children
+	}
+	local encodeOk, jsonPayload = pcall(function()
+		return HttpService:JSONEncode(payload)
+	end)
+	if not encodeOk then
+		warn(string.format("Failed to JSON-encode Workspace chunk %d/%d: %s",
+			chunkIndex, totalChunks, tostring(jsonPayload)))
+		local diag = diagnoseJsonError(children, "workspace.children")
+		if diag then
+			warn("   Offending field: " .. diag)
+		end
+		return false
+	end
+
 	local success, response = pcall(function()
 		return HttpService:PostAsync(
 			SERVER_URL .. "/sync/chunk",
-			HttpService:JSONEncode({
-				sessionId = sessionId,
-				type = "workspace_chunk",
-				chunkIndex = chunkIndex,
-				totalChunks = totalChunks,
-				children = children
-			}),
+			jsonPayload,
 			Enum.HttpContentType.ApplicationJson
 		)
 	end)
@@ -557,15 +626,29 @@ local function sendDeepChunk(sessionId, parentPath, instanceData, skipProgress)
 	-- Throttle to avoid rate limits
 	throttleRequest()
 
+	local payload = {
+		sessionId = sessionId,
+		type = "deep_chunk",
+		parentPath = parentPath,
+		instanceData = instanceData
+	}
+	local instanceLabel = parentPath .. "/" .. (instanceData and instanceData.Name or "<unnamed>")
+	local encodeOk, jsonPayload = pcall(function()
+		return HttpService:JSONEncode(payload)
+	end)
+	if not encodeOk then
+		warn("Failed to JSON-encode deep chunk '" .. instanceLabel .. "': " .. tostring(jsonPayload))
+		local diag = diagnoseJsonError(instanceData, instanceLabel)
+		if diag then
+			warn("   Offending field: " .. diag)
+		end
+		return false
+	end
+
 	local success, response = pcall(function()
 		return HttpService:PostAsync(
 			SERVER_URL .. "/sync/chunk",
-			HttpService:JSONEncode({
-				sessionId = sessionId,
-				type = "deep_chunk",
-				parentPath = parentPath,
-				instanceData = instanceData
-			}),
+			jsonPayload,
 			Enum.HttpContentType.ApplicationJson
 		)
 	end)
@@ -692,8 +775,8 @@ local function sendInstanceRecursive(sessionId, parentPath, instance, instanceDa
 	depth = depth or 0
 	local indent = string.rep("   ", depth)
 
-	local instanceSize = getJsonSize(instanceData)
 	local instancePath = parentPath .. "/" .. instanceData.Name
+	local instanceSize = getJsonSize(instanceData, instancePath)
 
 	-- If this instance fits within the limit, send it whole
 	if instanceSize <= MAX_CHUNK_SIZE then
@@ -727,7 +810,7 @@ local function sendInstanceRecursive(sessionId, parentPath, instance, instanceDa
 	local currentBatchSize = 0
 
 	for i, childData in ipairs(children) do
-		local childSize = getJsonSize(childData)
+		local childSize = getJsonSize(childData, instancePath .. "/" .. childData.Name)
 
 		-- If this single child is too big, recurse into it
 		if childSize > MAX_CHUNK_SIZE then
@@ -846,7 +929,7 @@ local function readAllServices()
 
 			-- Yield before size calculation to prevent freeze
 			task.wait()
-			local serviceSize = getJsonSize(serviceData)
+			local serviceSize = getJsonSize(serviceData, service.ClassName)
 
 			table.insert(serializedServices, {
 				service = service,
@@ -996,7 +1079,17 @@ local function readAllServices()
 				table.insert(gameData.Services, s.data)
 			end
 
-			local jsonData = HttpService:JSONEncode(gameData)
+			local encodeOk, jsonData = pcall(function()
+				return HttpService:JSONEncode(gameData)
+			end)
+			if not encodeOk then
+				warn("Failed to JSON-encode full game payload: " .. tostring(jsonData))
+				local diag = diagnoseJsonError(gameData, "gameData")
+				if diag then
+					warn("   Offending field: " .. diag)
+				end
+				return nil
+			end
 			print("Sending data to server...")
 			local syncSuccess, syncResponse = sendToServer(jsonData)
 
