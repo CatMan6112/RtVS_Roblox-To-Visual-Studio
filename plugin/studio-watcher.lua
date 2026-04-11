@@ -131,6 +131,8 @@ local getFileSystemName = PathUtils.getFileSystemName
 local getInstanceFilePath = PathUtils.getInstanceFilePath
 
 -- Walk a value to pinpoint the field responsible for a JSONEncode failure.
+-- For instance-shaped tables, uses child Name fields so the path reads like
+-- Workspace.Map.Tree_03.Leaves rather than Children.1.Children.5.
 local function diagnoseJsonError(data, path)
 	path = path or "<root>"
 	local wrapper = (type(data) == "table") and data or { data }
@@ -146,15 +148,49 @@ local function diagnoseJsonError(data, path)
 			path, typeof(data), string.sub(tostring(data), 1, 120), tostring(err))
 	end
 
-	for k, v in pairs(data) do
-		local keyType = type(k)
-		if keyType ~= "string" and keyType ~= "number" then
-			return string.format("%s has non-string/number key (type=%s): %s",
-				path, keyType, tostring(err))
+	local walkedKeys = {}
+
+	local function walkChildList(list, listKeyName)
+		if type(list) ~= "table" then
+			return nil
 		end
-		local childErr = diagnoseJsonError(v, path .. "." .. tostring(k))
-		if childErr then
-			return childErr
+		for i, child in ipairs(list) do
+			local label
+			if type(child) == "table" and type(child.Name) == "string" then
+				label = child.Name
+			else
+				label = listKeyName .. "[" .. i .. "]"
+			end
+			local childErr = diagnoseJsonError(child, path .. "." .. label)
+			if childErr then
+				return childErr
+			end
+		end
+		return nil
+	end
+
+	if data.Children ~= nil then
+		local e = walkChildList(data.Children, "Children")
+		if e then return e end
+		walkedKeys.Children = true
+	end
+	if data.Services ~= nil then
+		local e = walkChildList(data.Services, "Services")
+		if e then return e end
+		walkedKeys.Services = true
+	end
+
+	for k, v in pairs(data) do
+		if not walkedKeys[k] then
+			local keyType = type(k)
+			if keyType ~= "string" and keyType ~= "number" then
+				return string.format("%s has non-string/number key (type=%s): %s",
+					path, keyType, tostring(err))
+			end
+			local childErr = diagnoseJsonError(v, path .. "." .. tostring(k))
+			if childErr then
+				return childErr
+			end
 		end
 	end
 
