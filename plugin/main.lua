@@ -36,6 +36,29 @@ local versionMismatch = false
 local lastFullSyncTime = 0
 local RECENT_SYNC_THRESHOLD = 60 -- seconds
 
+-- Per-sync stats for string sanitization (invalid UTF-8 in property/attribute values).
+-- HttpService:JSONEncode rejects non-UTF-8 strings, so we swap them for a placeholder
+-- rather than failing the entire sync. Reset at the start of readAllServices.
+local sanitizeStats = {
+	count = 0,
+	examples = {}, -- up to 10 entries
+}
+
+local function isValidUtf8(s)
+	return utf8.len(s) ~= nil
+end
+
+local function sanitizeString(value, contextHint)
+	if isValidUtf8(value) then
+		return value
+	end
+	sanitizeStats.count = sanitizeStats.count + 1
+	if #sanitizeStats.examples < 10 and contextHint then
+		table.insert(sanitizeStats.examples, contextHint)
+	end
+	return string.format("<binary data: %d bytes>", #value)
+end
+
 local SYNC_MODE = {
 	NONE = "none",
 	PRIORITIZE_STUDIO = "prioritize_studio",
@@ -293,8 +316,10 @@ local function serializeCFrame(cf)
 	}
 end
 
--- Helper function to serialize common property types
-local function serializeProperty(value)
+-- Helper function to serialize common property types. contextHint is a human
+-- path like "Workspace.Map.Tree.Properties.Attributes.Size_Curve" used only when
+-- a string needs to be sanitized, so the end-of-sync summary can list locations.
+local function serializeProperty(value, contextHint)
 	local valueType = typeof(value)
 
 	if valueType == "Vector3" then
@@ -317,10 +342,12 @@ local function serializeProperty(value)
 			return tostring(value)
 		end
 		return value
-	elseif valueType == "string" or valueType == "boolean" then
+	elseif valueType == "boolean" then
 		return value
+	elseif valueType == "string" then
+		return sanitizeString(value, contextHint)
 	else
-		return tostring(value)
+		return sanitizeString(tostring(value), contextHint)
 	end
 end
 
@@ -336,6 +363,7 @@ local commonProperties = {
 -- Function to read properties of an instance
 local function getInstanceProperties(instance)
 	local properties = {}
+	local instanceFullName = instance:GetFullName()
 
 	for _, propName in ipairs(commonProperties) do
 		local success, value = pcall(function()
@@ -343,7 +371,7 @@ local function getInstanceProperties(instance)
 		end)
 
 		if success and value ~= nil then
-			properties[propName] = serializeProperty(value)
+			properties[propName] = serializeProperty(value, instanceFullName .. "." .. propName)
 		end
 	end
 
@@ -351,7 +379,7 @@ local function getInstanceProperties(instance)
 	if next(attributes) ~= nil then
 		local serialized = {}
 		for k, v in pairs(attributes) do
-			serialized[k] = serializeProperty(v)
+			serialized[k] = serializeProperty(v, instanceFullName .. ".Attributes." .. tostring(k))
 		end
 		properties.Attributes = serialized
 	end
@@ -936,6 +964,10 @@ local function readAllServices()
 	-- Reset throttle counter
 	objectsProcessed = 0
 
+	-- Reset per-sync string-sanitization stats
+	sanitizeStats.count = 0
+	sanitizeStats.examples = {}
+
 	local success, result = pcall(function()
 		local servicesToRead = {
 			game.Workspace,
@@ -1159,6 +1191,21 @@ local function readAllServices()
 	else
 		lastFullSyncTime = tick()
 		print("Successfully read all game services!")
+	end
+
+	-- Summary of sanitized strings (invalid UTF-8 replaced with placeholder)
+	if sanitizeStats.count > 0 then
+		warn("========================================")
+		warn(string.format("Sanitized %d non-UTF-8 string value(s) during sync.", sanitizeStats.count))
+		warn("These fields were replaced with '<binary data: N bytes>' placeholders")
+		warn("so JSON encoding could succeed. Locations:")
+		for _, ex in ipairs(sanitizeStats.examples) do
+			warn("   " .. ex)
+		end
+		if sanitizeStats.count > #sanitizeStats.examples then
+			warn(string.format("   ... and %d more", sanitizeStats.count - #sanitizeStats.examples))
+		end
+		warn("========================================")
 	end
 end
 

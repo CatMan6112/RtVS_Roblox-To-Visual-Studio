@@ -60,8 +60,26 @@ local function serializeCFrame(cf)
 	}
 end
 
--- Helper function to serialize common property types
-local function serializeProperty(value)
+local function isValidUtf8(s)
+	return utf8.len(s) ~= nil
+end
+
+-- Replace non-UTF-8 strings with a placeholder so HttpService:JSONEncode
+-- doesn't reject the whole payload. Warns once per occurrence with the
+-- instance path so the user can locate the offending attribute/property.
+local function sanitizeString(value, contextHint)
+	if isValidUtf8(value) then
+		return value
+	end
+	warn(string.format("RtVS: replaced non-UTF-8 string at %s (%d bytes) with placeholder",
+		tostring(contextHint or "<unknown>"), #value))
+	return string.format("<binary data: %d bytes>", #value)
+end
+
+-- Helper function to serialize common property types. contextHint is a human
+-- path used only if a string needs to be sanitized, so warnings can name the
+-- offending instance/field.
+local function serializeProperty(value, contextHint)
 	local valueType = typeof(value)
 
 	if valueType == "Vector3" then
@@ -78,10 +96,12 @@ local function serializeProperty(value)
 		return tostring(value)
 	elseif valueType == "Instance" then
 		return value:GetFullName()
-	elseif valueType == "string" or valueType == "number" or valueType == "boolean" then
+	elseif valueType == "number" or valueType == "boolean" then
 		return value
+	elseif valueType == "string" then
+		return sanitizeString(value, contextHint)
 	else
-		return tostring(value)
+		return sanitizeString(tostring(value), contextHint)
 	end
 end
 
@@ -97,6 +117,7 @@ local commonProperties = {
 -- Function to read properties of an instance
 local function getInstanceProperties(instance)
 	local properties = {}
+	local instanceFullName = instance:GetFullName()
 
 	for _, propName in ipairs(commonProperties) do
 		local success, value = pcall(function()
@@ -104,21 +125,24 @@ local function getInstanceProperties(instance)
 		end)
 
 		if success and value ~= nil then
-			properties[propName] = serializeProperty(value)
+			properties[propName] = serializeProperty(value, instanceFullName .. "." .. propName)
 		end
 	end
 
 	local attributes = instance:GetAttributes()
 	if next(attributes) ~= nil then
-		-- Filter out internal RtVS attributes
-		local filteredAttributes = {}
+		-- Filter out internal RtVS attributes and serialize the rest so userdata
+		-- types (Vector3, UDim2, ...) and binary strings don't break JSONEncode.
+		local serialized = {}
+		local hasAny = false
 		for name, value in pairs(attributes) do
 			if not name:match("^_rtvs_") then
-				filteredAttributes[name] = value
+				serialized[name] = serializeProperty(value, instanceFullName .. ".Attributes." .. tostring(name))
+				hasAny = true
 			end
 		end
-		if next(filteredAttributes) ~= nil then
-			properties.Attributes = filteredAttributes
+		if hasAny then
+			properties.Attributes = serialized
 		end
 	end
 
